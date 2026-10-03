@@ -1,0 +1,31 @@
+name: Bug report / Сообщить об ошибке
+description: Something does not work or the game crashes / Что-то не работает или игра вылетает
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Mod version / Версия мода
+      placeholder: v4.4
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened? / Что произошло?
+      description: What you did, what you expected, what happened instead. / Что делали, чего ждали, что случилось.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / Логи
+      description: |
+        Attach `ue4ss\UE4SS.log` and `ue4ss\Mods\LN3Couch\trail.txt`.
+        After a crash also attach the newest folder from `%LOCALAPPDATA%\LittleNightmaresIII\Saved\Crashes` (zipped).
+        Приложите эти файлы; после вылета — ещё и самую новую папку из Crashes (в архиве).
+  - type: input
+    id: setup
+    attributes:
+      label: Controllers / Геймпады
+      placeholder: e.g. 2x Xbox controller / 2 геймпада Xbox
