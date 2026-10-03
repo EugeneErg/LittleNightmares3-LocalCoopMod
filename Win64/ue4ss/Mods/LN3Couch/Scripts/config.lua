@@ -5,7 +5,7 @@
 -- ============================================================
 return {
   -- Чем управляет игрок 2: "keyboard" (правая часть клавиатуры) или "gamepad"
-  device = "keyboard",
+  device = "gamepad",
 
   -- Клавиши игрока 2 для device = "keyboard".
   -- Названия клавиш — как в Unreal: Up, Down, Left, Right, Enter, RightShift,
@@ -22,13 +22,15 @@ return {
   gamepad = {
     jump   = "Gamepad_FaceButton_Bottom",   -- A / крест
     grab   = "Gamepad_RightTrigger",        -- RT / R2 (держать)
-    crouch = "Gamepad_FaceButton_Right",    -- B / круг (держать)
-    sprint = "Gamepad_LeftTrigger",         -- LT / L2 (держать)
+    crouch = "Gamepad_LeftTrigger",         -- LT / L2 (держать)
+    weapon = "Gamepad_FaceButton_Right",    -- B / круг: достать/убрать ключ или лук
+    throw  = "Gamepad_RightShoulder",       -- RB / R1
+    sprint = "Gamepad_FaceButton_Left",     -- X / квадрат (держать)
     deadzone = 0.2,
   },
   -- true: геймпад №1 — у игрока 2 (игрок 1 на клавиатуре)
   -- false: геймпад №1 — у игрока 1, геймпад №2 — у игрока 2
-  gamepad_goes_to_player2 = true,
+  gamepad_goes_to_player2 = false,
 
   -- Разделение экрана: "auto" (когда герои далеко), "always", "never"
   split = "auto",

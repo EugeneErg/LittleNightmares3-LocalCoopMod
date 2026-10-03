@@ -1,14 +1,16 @@
 -- настройки LN3Couch, сохранены из меню игры
 return {
-  device = "keyboard",
+  device = "gamepad",
   gamepad = {
-    crouch = "Gamepad_FaceButton_Right",
+    crouch = "Gamepad_LeftTrigger",
     deadzone = 0.2,
     grab = "Gamepad_RightTrigger",
     jump = "Gamepad_FaceButton_Bottom",
-    sprint = "Gamepad_LeftTrigger",
+    sprint = "Gamepad_FaceButton_Left",
+    throw = "Gamepad_RightShoulder",
+    weapon = "Gamepad_FaceButton_Right",
   },
-  gamepad_goes_to_player2 = true,
+  gamepad_goes_to_player2 = false,
   invert_forward = false,
   invert_right = false,
   keyboard = {
@@ -19,8 +21,12 @@ return {
     left = "Left",
     right = "Right",
     sprint = "Slash",
+    throw = "Period",
     up = "Up",
+    weapon = "Comma",
   },
+  p2_controller_confirmed = false,
+  p2_controller_id = 1,
   split = "auto",
   split_layout = "top_bottom",
   split_on_distance = 900,
