@@ -1,4 +1,4 @@
--- LN3Couch v4.3 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v4.4 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -721,7 +721,11 @@ local function acquire()
   end
   if not buddy then dumpHeroes("не нашёл — нет напарника-ИИ"); return false end
   S.ai, S.buddy, S.prev, S.weaponOut = ai, buddy, {}, false
-  if valid(ai) then setBrain(ai, false) end
+  if valid(ai) then
+    local okp, ap = pcall(function() return ai.Pawn end)
+    if okp and valid(ap) then setBrain(ai, false)
+    else pcall(function() ai:SetActorTickEnabled(false) end) end  -- контроллер без героя трогать нельзя
+  end
   log("Игрок 1: %s | Игрок 2: %s", heroName(S.p1), heroName(buddy))
   return true
 end
@@ -827,9 +831,18 @@ local function keepListener()
 end
 local function takeBuddy()
   if not (valid(S.pc2) and valid(S.buddy)) then return false end
-  if valid(S.ai) then setBrain(S.ai, false) end
+  -- ИИ-контроллер напарника после передачи героя остаётся «без тела». Если он
+  -- продолжит работать, на ближайшем кадре он обратится к своему герою, а героя
+  -- уже нет — игра падала. Поэтому сначала полностью его останавливаем.
+  if valid(S.ai) then
+    try("ai tick off", function() S.ai:SetActorTickEnabled(false) end)
+    setBrain(S.ai, false)
+  end
   resetBuddyInput()
-  if not safePossess(S.pc2, S.buddy, "напарник → игрок 2") then return false end
+  if not safePossess(S.pc2, S.buddy, "напарник → игрок 2") then
+    if valid(S.ai) then try("ai tick on", function() S.ai:SetActorTickEnabled(true) end) end
+    return false
+  end
   local ok, c = pcall(function() return S.buddy.Controller end)
   if not (ok and c == S.pc2) then log("игрок 2 не смог взять героя"); return false end
   S.real = true
@@ -843,6 +856,7 @@ local function releaseBuddy()
   S.real = false
   if valid(S.buddy) and valid(S.ai) then
     safePossess(S.ai, S.buddy, "напарник → ИИ")
+    try("ai tick on", function() S.ai:SetActorTickEnabled(true) end)
   end
 end
 
@@ -2114,4 +2128,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v4.3 загружен. F9 — меню кооператива")
+log("v4.4 загружен. F9 — меню кооператива")
