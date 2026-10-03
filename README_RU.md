@@ -9,6 +9,7 @@
 В самой игре кооператив только по сети. С LN3Couch второй человек за тем же компьютером берёт под управление Low или Alone со своего геймпада, а экран делится, только когда это нужно.
 
 [English version](README.md)
+<img width="2347" height="1599" alt="image" src="https://github.com/user-attachments/assets/6bf9eb98-8f4a-418d-9262-b6458ccc2398" />
 
 ---
 
