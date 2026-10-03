@@ -11,7 +11,7 @@ Little Nightmares III only offers online co-op. LN3Couch lets a second person on
 
 [Русская версия](README_RU.md)
 
-<!-- TODO: add a short GIF of two players in split screen here — it is the single best way to show what the mod does -->
+<img width="2347" height="1599" alt="image" src="https://github.com/user-attachments/assets/53c32411-0679-4df7-abfb-0f1ffaa50e9a" />
 
 ---
 
