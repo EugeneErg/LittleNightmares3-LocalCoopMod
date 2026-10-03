@@ -1,512 +1,116 @@
-# LN3Couch — Local Co-op for Little Nightmares III
+# LN3Couch — Local Couch Co-op for Little Nightmares III
 
-<p align="center">
+[![Latest release](https://img.shields.io/github/v/release/EugeneErg/LittleNightmares3-LocalCoopMod?label=download)](https://github.com/EugeneErg/LittleNightmares3-LocalCoopMod/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/EugeneErg/LittleNightmares3-LocalCoopMod/total)](https://github.com/EugeneErg/LittleNightmares3-LocalCoopMod/releases)
+[![Stars](https://img.shields.io/github/stars/EugeneErg/LittleNightmares3-LocalCoopMod?style=flat)](https://github.com/EugeneErg/LittleNightmares3-LocalCoopMod/stargazers)
+[![UE4SS](https://img.shields.io/badge/built%20with-UE4SS-blue)](https://github.com/UE4SS-RE/RE-UE4SS)
 
-**Play Little Nightmares III locally with two players on one PC.**
+**Play Little Nightmares III with two players on one PC — one screen, two gamepads, like *It Takes Two* or *Split Fiction*.**
 
-Keyboard + Controller • Dynamic Split-Screen • Same Game Session
+Little Nightmares III only offers online co-op. LN3Couch lets a second person on the same PC take over Low or Alone with their own controller, with a dynamic split screen that appears only when you need it.
 
-</p>
+[Русская версия](README_RU.md)
 
-> **LN3Couch** is an unofficial community-made mod that adds local two-player co-op to **Little Nightmares III**.
+<!-- TODO: add a short GIF of two players in split screen here — it is the single best way to show what the mod does -->
 
 ---
 
 ## Features
 
-* **2-player local co-op** on a single PC
-* No second copy of the game required
-* Player 2 can use a **keyboard or controller**
-* Player 1 and Player 2 can use different input devices
-* **Dynamic split-screen**
-* Automatic switching between shared camera and split-screen
-* Manual split-screen modes
-* In-game co-op settings menu
-* Configurable Player 2 controls
-* Settings are saved between launches
-* Co-op can be enabled/disabled during gameplay
-* Integrated **Co-op** button in the game's pause menu
-* Built with **UE4SS**
-
----
-
-## How It Works
-
-Little Nightmares III already contains systems for controlling the second character.
-
-LN3Couch uses those existing systems instead of creating a completely separate multiplayer implementation.
-
-When local co-op is enabled:
-
-```text
-Player 1
-   │
-PlayerController
-   │
-Player 1 Pawn
-
-
-Player 2
-   │
-AI Controller
-   │
-Player 2 Pawn
-```
-
-The AI controller of Player 2 is temporarily disabled and LN3Couch feeds it local input from the second player.
-
-This allows the existing Player 2 character, animations and gameplay systems to continue being used by the game.
-
-A second Unreal `PlayerController` is also created when needed for the second viewport/camera.
-
----
-
-## Dynamic Split-Screen
-
-LN3Couch does not force split-screen to remain enabled at all times.
-
-The mod can automatically determine whether both characters can be displayed on the same screen.
-
-### Auto mode
-
-When the players are close enough:
-
-```text
-┌──────────────────────────────┐
-│                              │
-│       P1          P2         │
-│                              │
-│       Shared Camera          │
-│                              │
-└──────────────────────────────┘
-```
-
-When the players move too far apart:
-
-```text
-┌───────────────┬───────────────┐
-│               │               │
-│      P1       │       P2      │
-│               │               │
-│    Camera 1   │    Camera 2   │
-│               │               │
-└───────────────┴───────────────┘
-```
-
-When the players come back together, the mod can return to the shared camera.
-
-The system uses separate thresholds for entering and leaving split-screen to prevent rapid switching when players are near the boundary.
-
----
-
-## Split-Screen Modes
-
-The mod supports several modes:
-
-| Mode       | Description                                                   |
-| ---------- | ------------------------------------------------------------- |
-| `Auto`     | Automatically switches between shared camera and split-screen |
-| `Distance` | Uses player distance to control split-screen                  |
-| `Always`   | Always use split-screen                                       |
-| `Never`    | Never use split-screen                                        |
-
-The automatic system primarily uses screen-space visibility and can fall back to distance-based detection when necessary.
-
----
-
-## Player 2 Controls
-
-### Default keyboard controls
-
-| Action          | Key         |
-| --------------- | ----------- |
-| Move            | Arrow Keys  |
-| Jump            | Enter       |
-| Grab / Interact | Right Shift |
-| Crouch          | Right Ctrl  |
-| Sprint          | `/`         |
-
-The controls can be changed from the in-game LN3Couch menu.
-
-### Controller
-
-Player 2 can use a separate gamepad.
-
-Supported inputs include:
-
-* Left stick
-* Right stick
-* A
-* B
-* LT
-* RT
-
-A configurable stick deadzone is provided.
-
----
-
-# Installation
+- **Real second player.** Player 2 controls the companion with their own gamepad exactly like Player 1: walk, run, crouch, jump, grab, carry and throw items, push and pull boxes, use the wrench or the bow, climb. All of it is the game's own controls, not an imitation.
+- **Dynamic split screen.** You share one screen while both heroes are in view. When the companion leaves Player 1's frame, the screen splits top/bottom (or left/right). When you come back together, it merges again.
+- **Room-aware camera for Player 2.** Player 2's camera follows the same per-room camera rules the game uses for Player 1: set angles, room bounds, smooth transitions between rooms.
+- **Look around.** Each player looks around with the right stick when the screen is split. When it is shared, both can.
+- **In-game menu.** A **Co-op** item is added to the game's pause menu (or press **F9**). Turn co-op on or off at any time. Settings are saved.
+- **Automatic gamepad detection.** Press A on Player 2's controller and the mod finds it.
+- **Survives checkpoints, deaths and level changes.** Co-op pauses during loading and resumes on its own.
 
 ## Requirements
 
-* **Little Nightmares III — PC version**
-* Windows
-* A compatible version of the game
-* UE4SS files included with the mod
+- Little Nightmares III for PC (Steam), Windows
+- **Two gamepads**, one per player
+- Start a regular **single-player** game, not the online co-op mode. The mod hands the AI companion to Player 2.
 
-## Install
+## Installation
 
-1. Download the latest release from the **Releases** section.
-
-2. Open the game directory.
-
-3. Navigate to:
+1. Download `LN3Couch_vX.Y.zip` from **[Releases](https://github.com/EugeneErg/LittleNightmares3-LocalCoopMod/releases/latest)**.
+2. Open the game folder and go to `SMG031MP\Binaries\Win64` (the folder that contains `LittleNightmaresIII.exe`).
+3. Copy the **contents** of the archive's `Win64` folder there: `dwmapi.dll` and the `ue4ss` folder.
 
 ```text
-SMG031MP\Binaries\Win64
+SMG031MP\Binaries\Win64\
+├── LittleNightmaresIII.exe
+├── dwmapi.dll        ← from the mod
+└── ue4ss\            ← from the mod
 ```
 
-4. Copy the contents of the mod's `Win64` folder into the game's `Win64` folder.
+4. Start the game. A UE4SS console window opens next to it. This is expected.
 
-The resulting structure should look similar to:
+**To uninstall,** delete `dwmapi.dll` and the `ue4ss` folder.
+
+## How to play
+
+1. Start or load a single-player game.
+2. Open the pause menu and select **Co-op**, or press **F9**.
+3. Turn on Player 2. The first time, press **A** on Player 2's controller so the mod can find it.
+4. Play. Player 2 uses the game's standard controller layout.
+
+## Settings
+
+Everything is in the in-game **Co-op** menu:
+
+| Option | Values |
+|---|---|
+| Player 2 | on / off |
+| Split screen | Auto (when the companion is off-screen), By distance, Always, Never |
+| Layout | Top/bottom, Left/right |
+| Player 2 gamepad | auto-detect |
+
+Settings are stored in `ue4ss\Mods\LN3Couch\settings.lua`.
+
+## How it works
+
+LN3Couch is a Lua mod running on [UE4SS](https://github.com/UE4SS-RE/RE-UE4SS).
 
 ```text
-SMG031MP\
-└── Binaries\
-    └── Win64\
-        ├── LittleNightmaresIII.exe
-        ├── dwmapi.dll
-        └── ue4ss\
+Before:  Player 1 ─ PlayerController ─ hero 1
+                    AI controller    ─ hero 2 (companion)
+
+After:   Player 1 ─ PlayerController 1 ─ hero 1
+         Player 2 ─ PlayerController 2 ─ hero 2   (AI controller suspended)
 ```
 
-5. Start Little Nightmares III.
+- A second local player is created (`CreatePlayer`) and gets the companion hero. The game's own input, abilities and interactions then work for Player 2 natively.
+- The companion's AI controller is fully suspended while Player 2 owns the hero, and restored when co-op is turned off.
+- The game keeps an internal character registry that grows every time a hero changes controller and is only cleaned up when the hero is destroyed. Left as is, this crashes the game after the next death. LN3Couch undoes the extra entry right after each hand-over.
+- Split screen uses the engine's native two-player viewports. The mod decides when to split by projecting the companion into Player 1's view.
+- Player 2's view uses a separate camera that reproduces the game's "dollhouse" room cameras: the hero's position in the room's player volume maps to the camera's position in its camera volume, with the designer-set angle and follow limits.
+- Audio stays with Player 1's camera, so room ambience keeps playing when Player 2 joins.
 
-6. Start or load a game.
+## Compatibility
 
-7. Open the pause menu and select **Co-op**.
+Tested on the Steam version of Little Nightmares III, October 2026. A game update can change the internals the mod relies on. If the mod stops working after an update, please open an issue.
 
-You can also use:
+## Troubleshooting
 
-```text
-F9
-```
+- **The game does not start or the UE4SS window does not appear.** Check that `dwmapi.dll` and `ue4ss` are directly inside `Win64`, not in `Win64\Win64`.
+- **No Co-op item in the pause menu.** You need to be in a loaded game, not the main menu. F9 also works.
+- **The wrong gamepad controls Player 2.** In the Co-op menu, run gamepad detection and press A on Player 2's controller.
+- **Something broke.** Please attach `ue4ss\UE4SS.log`, `ue4ss\Mods\LN3Couch\trail.txt` and, after a crash, the newest folder from `%LOCALAPPDATA%\LittleNightmaresIII\Saved\Crashes`.
 
-to open the LN3Couch menu.
+## Reporting bugs
 
----
+[Open an issue](https://github.com/EugeneErg/LittleNightmares3-LocalCoopMod/issues/new/choose) and include what you did, what happened and the log files listed above. Videos help a lot.
 
-# Quick Start
+## Credits
 
-The fastest way to test the mod:
+- **LN3Couch** by [EugeneErg](https://github.com/EugeneErg)
+- [UE4SS](https://github.com/UE4SS-RE/RE-UE4SS), MIT license (included in `ue4ss/LICENSE`)
 
-1. Launch the game.
-2. Start a game.
-3. Press **F9**.
-4. Enable Player 2.
-5. Connect/configure Player 2's controller or keyboard.
-6. Start playing.
+## Disclaimer
 
----
-
-# In-Game Menu
-
-LN3Couch provides its own configuration menu.
-
-Available options include:
-
-* Enable/disable Player 2
-* Player 2 input configuration
-* Split-screen mode
-* Split-screen distance
-* Keyboard bindings
-* Controller configuration
-* Reset settings
-
-The mod also adds a **Co-op** entry directly to the game's pause menu.
+Unofficial fan-made modification. Not affiliated with or endorsed by Bandai Namco Entertainment or Supermassive Games. Little Nightmares is a trademark of its respective owners. You need a legitimate copy of the game. Use at your own risk.
 
 ---
 
-# Configuration
-
-Settings are saved to:
-
-```text
-ue4ss\Mods\LN3Couch\settings.lua
-```
-
-This means your configuration can persist between game launches.
-
----
-
-# Technical Overview
-
-LN3Couch is implemented as a Lua mod running through **UE4SS**.
-
-The mod uses several existing Little Nightmares III systems rather than replacing the game's player architecture.
-
-### Player 2
-
-The existing `KosmosAIController` and second hero Pawn are located at runtime.
-
-The mod identifies the second character using the game's existing classes, including:
-
-```text
-BP_Low_C
-BP_Alone_C
-```
-
-The AI controller is then temporarily stopped while local input is supplied by LN3Couch.
-
-Conceptually:
-
-```text
-Game's existing Player 2
-          │
-          ▼
-   KosmosAIController
-          │
-       AI stopped
-          │
-          ▼
-     LN3Couch Input
-          │
-          ▼
-       Player 2
-```
-
-This allows the mod to reuse existing movement, interaction and character functionality.
-
----
-
-## Second Player Camera
-
-The second viewport uses an additional camera actor.
-
-The camera follows Player 2 while maintaining an offset derived from the main player's camera.
-
-This allows the second player to have an independent view without replacing the game's existing camera system.
-
-The mod can dynamically enable or disable the second viewport depending on the selected split-screen mode.
-
----
-
-## Second PlayerController
-
-When local co-op is enabled, LN3Couch creates an additional Unreal `PlayerController` for the second local viewport.
-
-The controller is not used as the primary owner of Player 2's Pawn.
-
-Instead:
-
-```text
-PlayerController 1
-        │
-        └── Player 1
-
-AI Controller
-        │
-        └── Player 2
-
-PlayerController 2
-        │
-        └── Secondary viewport / camera
-```
-
-This approach allows the existing Player 2 gameplay logic to remain intact.
-
----
-
-# Compatibility
-
-| Feature                 | Status        |
-| ----------------------- | ------------- |
-| PC                      | Supported     |
-| 2 local players         | Supported     |
-| Keyboard + Keyboard     | Supported     |
-| Keyboard + Controller   | Supported     |
-| Controller for Player 2 | Supported     |
-| Dynamic split-screen    | Supported     |
-| Shared camera mode      | Supported     |
-| Official online co-op   | Not modified  |
-| Console versions        | Not supported |
-
-Compatibility may change after Little Nightmares III updates.
-
-Game updates can change internal Unreal classes, functions or UI structures used by the mod.
-
----
-
-# Known Limitations
-
-LN3Couch is an ongoing project.
-
-Because Little Nightmares III was not originally designed specifically for this local configuration, some situations may behave differently from the official game.
-
-Potential areas affected by future game updates include:
-
-* Player Controller creation
-* Camera systems
-* Pause menu UI
-* Player/AI classes
-* Input handling
-* Level transitions
-* Respawn/checkpoint behaviour
-
-If you encounter a reproducible problem, please report it.
-
----
-
-# Troubleshooting
-
-## The game does not start
-
-Verify that:
-
-```text
-dwmapi.dll
-```
-
-is directly inside:
-
-```text
-SMG031MP\Binaries\Win64
-```
-
-and that:
-
-```text
-ue4ss
-```
-
-is also directly inside `Win64`.
-
-### Correct
-
-```text
-Win64\
-├── dwmapi.dll
-└── ue4ss\
-```
-
-### Incorrect
-
-```text
-Win64\
-└── Win64\
-    ├── dwmapi.dll
-    └── ue4ss\
-```
-
----
-
-## Co-op does not appear
-
-Try the following:
-
-1. Start an actual game session.
-2. Press `F9`.
-3. Check that UE4SS loaded correctly.
-4. Verify that the mod files are in the correct directory.
-5. Verify game/mod compatibility.
-
----
-
-## Player 2 does not respond
-
-Check:
-
-* Player 2 key bindings
-* Controller connection
-* Controller assignment
-* Whether another controller is interfering with input
-
-For controller problems, try temporarily disconnecting other controllers.
-
----
-
-# Reporting Bugs
-
-Before opening an issue, please provide:
-
-```text
-Game version:
-Mod version:
-Windows version:
-
-Player 1 input:
-Player 2 input:
-
-Description:
-
-Steps to reproduce:
-
-Expected behaviour:
-
-Actual behaviour:
-```
-
-Screenshots, videos and UE4SS logs are highly appreciated.
-
----
-
-# Development
-
-The project is open to contributions, testing and bug reports.
-
-If you are familiar with:
-
-* Unreal Engine
-* UE4SS
-* Lua
-* Unreal Blueprint internals
-* Local multiplayer
-* Camera systems
-
-you are welcome to contribute improvements or report technical findings.
-
----
-
-# Roadmap
-
-Possible future improvements may include:
-
-* Additional controller/input options
-* Improved camera behaviour
-* More robust level-transition handling
-* Better compatibility with future game updates
-* Additional configuration options
-* Improved split-screen behaviour
-* More extensive testing across game versions
-
-The roadmap may change as the mod develops.
-
----
-
-# Credits
-
-**LN3Couch**
-Created by **EugeneErg**
-
-Built using **UE4SS**.
-
-Thanks to everyone testing the mod and contributing feedback.
-
----
-
-# Disclaimer
-
-Little Nightmares III and all associated trademarks are property of their respective owners.
-
-LN3Couch is an unofficial community modification and is not affiliated with, endorsed by, or supported by Bandai Namco Entertainment or Supermassive Games.
-
-Use the modification at your own risk.
-
----
-
-## ⭐ Support the Project
-
-If LN3Couch helps you play Little Nightmares III locally with friends:
-
-**Star the repository on GitHub.**
-
-Stars, bug reports, feedback and contributions help the project grow and make future development easier.
+If LN3Couch let you play with someone you love, **⭐ star the repo**. It really helps other people find it.
