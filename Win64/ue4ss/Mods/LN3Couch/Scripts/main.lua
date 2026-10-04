@@ -1,4 +1,4 @@
--- LN3Couch v9.10.3 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.10.4 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -1495,6 +1495,38 @@ S.audioProbeTick = function()
   S.audioProbeLast = line
   trail(string.format("звук (%s): %s", S.split and "разделён" or "общий", line))
 end
+-- Звук: после подключения второго игрока весь звук иногда молчит до первой
+-- смерти — его чинит возрождение героев. Вызываем возрождение игры один раз
+-- сразу после подключения (без смерти). Параметры функции подбираем по их
+-- типам, т.к. заранее их не знаем.
+S.respawnForAudio = function()
+  if CFG.audio_respawn == false or not (S.coop and valid(S.p1)) then return end
+  local dc = nil
+  pcall(function() dc = S.p1:GetComponentByClass(StaticFindObject("/Script/Kosmos.KosmosCharacterDeathComponent")) end)
+  if not valid(dc) then trail("звук: у героя нет компонента смерти"); return end
+  local args, desc = {}, {}
+  pcall(function()
+    StaticFindObject("/Script/Kosmos.KosmosCharacterDeathComponent:RespawnPlayers"):ForEachProperty(function(pr)
+      local n = pr:GetFName():ToString()
+      if n == "ReturnValue" then return end
+      local cn = ""; pcall(function() cn = pr:GetClass():GetFName():ToString() end)
+      local v
+      if cn == "BoolProperty" then v = false
+      elseif cn:find("Int") or cn == "FloatProperty" or cn == "DoubleProperty" or cn == "ByteProperty" or cn == "EnumProperty" then v = 0
+      elseif cn == "StrProperty" then v = ""
+      elseif cn == "NameProperty" then v = FName("None")
+      elseif cn == "StructProperty" then v = {}
+      elseif cn:find("Object") then
+        local ln = n:lower()
+        v = (ln:find("killer") or ln:find("instigator") or ln:find("causer")) and nil or S.p1
+      end
+      args[#args + 1] = v
+      desc[#desc + 1] = n .. ":" .. cn .. "=" .. (v == S.p1 and "герой 1" or tostring(v))
+    end)
+  end)
+  local ok, e = pcall(function() dc:RespawnPlayers(table.unpack(args, 1, #desc)) end)
+  log("звук: возрождение героев (%s) — %s", table.concat(desc, ", "), ok and "сделано" or ("ошибка: " .. tostring(e)))
+end
 local function keepListener()
   if not valid(AUDIO.owner) then return end
   local o = listenerOwner()
@@ -1503,6 +1535,10 @@ local function keepListener()
     if valid(lib) then
       try("RegisterDefaultListener", function() lib:RegisterDefaultListener(S.pc1, AUDIO.owner) end)
       S.lastListenerFix = now()
+      if ExecuteWithDelay and not S.audioRespawnDone then
+        S.audioRespawnDone = true
+        ExecuteWithDelay(1500, function() ExecuteInGameThread(function() pcall(S.respawnForAudio) end) end)
+      end
       if not AUDIO.logged then AUDIO.logged = true; log("звук: игра переключила слушателя на %s — вернул на %s", cname(o), cname(AUDIO.owner)) end
       if ExecuteWithDelay then
         ExecuteWithDelay(300, function() ExecuteInGameThread(function() pcall(refreshAmbience) end) end)
@@ -1609,6 +1645,7 @@ local function setCoop(on)
     S.enemy.listAt, S.enemy.killAt, S.enemy.bbAt, S.enemy.st, S.enemy.pos = -10000, -10000, {}, {}, {}
     if not acquire() then toast("Не нашёл двух героев — загрузите игру"); return end
     S.coop, S.split = true, false
+    S.audioRespawnDone = false
     S.lastBuddyLoc, S.camFrozenAt = nil, nil   -- место героя с прошлого уровня не годится
     -- запоминаем мир, в котором включились: иначе проверка смены уровня,
     -- не успевшая заметить загрузку, сразу же приостановит кооператив
@@ -2552,8 +2589,46 @@ S.ensurePOI = function()
   pcall(function() if not valid(c.mCameraManager) then c.mCameraManager = S.pc1.PlayerCameraManager end end)
   return c
 end
+-- На разделённом экране камера игрока 1 — только его. Игра (как в одиночной
+-- игре) «подсвечивает» напарника, когда тот крутит колесо или тянет рычаг:
+-- включает свою точку интереса возле него, и камера игрока 1 уезжает к
+-- напарнику. Пока экран разделён, такие точки возле игрока 2 (и далеко от
+-- игрока 1) выключаем; потом возвращаем как было.
+S.poiMuted = S.poiMuted or {}
+S.suppressPOIs = function()
+  local cls = StaticFindObject(S.POI_CLASS)
+  if not valid(cls) then return end
+  local p1l, p2l = S.p1:K2_GetActorLocation(), S.buddy:K2_GetActorLocation()
+  for _, c in ipairs(FindAllOf(cls:GetFName():ToString()) or {}) do
+    if valid(c) and c ~= S.poi then
+      local key = c:GetFullName()
+      local okw, w = pcall(function() return c.mWeight end)
+      local muted = S.poiMuted[key]
+      local near = false
+      pcall(function()
+        local o = c:GetOwner()
+        local ol = c:K2_GetComponentLocation()
+        near = o == S.buddy or (dist(ol, p2l) < 400 and dist(ol, p1l) > 800)
+      end)
+      if S.split and near then
+        if not muted and okw and w and w > 0 then
+          S.poiMuted[key] = { c = c, w = w }
+          pcall(function() c.mWeight = 0 end)
+          local on = "?"; pcall(function() on = c:GetOwner():GetFName():ToString() end)
+          trail(string.format("камера 1: выключил точку интереса игры у второго игрока (%s, вес %.2f)", on, w))
+        elseif muted and okw and w and w > 0 then
+          muted.w = w; pcall(function() c.mWeight = 0 end)   -- игра снова включила — держим выключенной
+        end
+      elseif muted then
+        pcall(function() c.mWeight = muted.w end)
+        S.poiMuted[key] = nil
+      end
+    end
+  end
+end
 S.midCamTick = function()
   if S.frames % 6 == 3 then S.dyingNow = S.anyDying() end
+  if S.frames % 10 == 5 and (S.split or next(S.poiMuted)) then pcall(S.suppressPOIs) end
   if CFG.shared_center == false then return end
   local c = S.ensurePOI()
   if not c then return end
@@ -4025,4 +4100,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.10.3 загружен. F9 — меню кооператива")
+log("v9.10.4 загружен. F9 — меню кооператива")
