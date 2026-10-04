@@ -1,4 +1,4 @@
--- LN3Couch v9.11.8 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.11.9 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -2318,12 +2318,35 @@ end
 -- Разбор: что хранит инвентарь (поля-объекты и массивы) до и после подсадки
 S.invDiag = function(label)
   if CFG.inv_trace == false then return end
+  -- класс инвентаря ищем по его функции EnableItem (имя класса заранее не знаем)
+  if not S.invClassName then
+    pcall(function()
+      ForEachUObject(function(o)
+        if S.invClassName then return end
+        pcall(function()
+          if o:GetFName():ToString() == "EnableItem" and o:GetClass():GetFName():ToString() == "Function" then
+            S.invClassName = o:GetOuter():GetFName():ToString()
+          end
+        end)
+      end)
+    end)
+    trail("инвентарь: класс " .. tostring(S.invClassName))
+  end
   local out = {}
-  for _, comp in ipairs(FindAllOf("InventoryComponent") or {}) do
+  -- все фонарики и их состояние
+  pcall(function()
+    local fl = {}
+    for _, a in ipairs(FindAllOf("BP_Flashlight_Inventory_C") or {}) do
+      local st = "?"; pcall(function() st = (a:IsPendingKill() and "уничтожен" or "жив") end)
+      local ow = "nil"; pcall(function() ow = valid(a.Owner) and cname(a.Owner) or "nil" end)
+      fl[#fl + 1] = a:GetFName():ToString() .. "(" .. st .. ", владелец " .. ow .. ")"
+    end
+    out[#out + 1] = "фонарики: " .. table.concat(fl, ", ")
+  end)
+  for _, comp in ipairs(FindAllOf(S.invClassName or "InventoryComponent") or {}) do
     pcall(function()
       if not valid(comp) then return end
       local ow = comp:GetOwner()
-      if not (ow == S.p1 or ow == S.buddy or ow == S.pc1 or ow == S.pc2 or ow == S.ai) then return end
       local parts = {}
       local cls, depth = comp:GetClass(), 0
       while valid(cls) and depth < 3 do
@@ -2804,7 +2827,7 @@ S.boostInput = function()
   local HOLD = CFG.boost_hold_frames or 24
   if S.rbHeld1 == HOLD then
     local spot = S.nearestBoostTo(S.p1)
-    local item = spot and S.p1HeldItem() or nil
+    local item = (spot and CFG.boost_stash == true) and S.p1HeldItem() or nil
     if item then
       local ok, e = S.itemCall(item, "RequestItem")
       trail("подсадка: у Low в руках " .. cname(item) .. " — убираю перед подсадкой (" .. (ok and "ок" or tostring(e)) .. ")")
@@ -4332,4 +4355,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.11.8 загружен. F9 — меню кооператива")
+log("v9.11.9 загружен. F9 — меню кооператива")
