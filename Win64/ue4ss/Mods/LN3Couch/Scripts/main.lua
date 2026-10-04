@@ -1,4 +1,4 @@
--- LN3Couch v9.9.7 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.9.8 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -1495,6 +1495,47 @@ S.rebindListeners = function(why)
   trail(string.format("звук: привязал %d источников к «ушам» игрока 1 (%s)%s", n, why or "",
     bad > 0 and string.format(", не вышло у %d: %s", bad, err) or ""))
 end
+-- Попытка 2: при смерти звук чинится, когда игра заново «вселяет» игрока в
+-- героя — тогда она сама (в своём коде) ставит «уши» правильно. Делаем то же
+-- без смерти: на мгновение отпускаем героя игрока 1 и сразу берём снова.
+S.repossessP1 = function()
+  if CFG.audio_repossess == false or not (S.coop and valid(S.pc1) and valid(S.p1)) then return end
+  local okU = pcall(function() S.pc1:UnPossess() end)
+  local okP = safePossess(S.pc1, S.p1, "игрок 1 заново (звук)")
+  local back = false; pcall(function() back = S.pc1.Pawn == S.p1 end)
+  trail(string.format("звук: игрок 1 заново вселён в героя — отпустил=%s, взял=%s, герой на месте=%s", tostring(okU), tostring(okP), tostring(back)))
+  if not back then pcall(function() S.pc1:Possess(S.p1) end) end
+end
+-- Для запасного варианта: какие функции смерти/возрождения есть у игры.
+S.dumpDeathFns = function()
+  if S.deathFnsDumped then return end
+  S.deathFnsDumped = true
+  local seen, out = {}, {}
+  local function scan(cls)
+    local depth = 0
+    while valid(cls) and depth < 8 do
+      local cn = ""; pcall(function() cn = cls:GetFName():ToString() end)
+      if seen[cn] or cn == "Actor" or cn == "Object" or cn == "ActorComponent" or cn == "Pawn" or cn == "Controller" then break end
+      seen[cn] = true
+      pcall(function()
+        cls:ForEachFunction(function(f)
+          local fn = ""; pcall(function() fn = f:GetFName():ToString() end)
+          if fn:find("Kill") or fn:find("Death") or fn:find("Die") or fn:find("Dead") or fn:find("Respawn") or fn:find("Checkpoint") or fn:find("Restart") or fn:find("Revive") then
+            out[#out + 1] = cn .. ":" .. fn
+          end
+        end)
+      end)
+      local ok, sup = pcall(function() return cls:GetSuperStruct() end)
+      cls = ok and sup or nil
+      depth = depth + 1
+    end
+  end
+  pcall(function() scan(StaticFindObject("/Script/Kosmos.KosmosCharacterDeathComponent")) end)
+  for _, o in ipairs({ FindFirstOf("GameModeBase"), FindFirstOf("GameStateBase"), S.pc1, S.p1 }) do
+    pcall(function() if valid(o) then scan(o:GetClass()) end end)
+  end
+  trail("функции смерти/возрождения: " .. table.concat(out, ", "))
+end
 local function keepListener()
   if not valid(AUDIO.owner) then return end
   local o = listenerOwner()
@@ -1505,6 +1546,10 @@ local function keepListener()
       S.lastListenerFix = now()
       if ExecuteWithDelay then
         ExecuteWithDelay(200, function() ExecuteInGameThread(function() pcall(S.rebindListeners, "после возврата «ушей»") end) end)
+        if not S.repossessDone then
+          S.repossessDone = true
+          ExecuteWithDelay(1500, function() ExecuteInGameThread(function() pcall(S.repossessP1); pcall(S.dumpDeathFns) end) end)
+        end
       else pcall(S.rebindListeners, "после возврата «ушей»") end
       if not AUDIO.logged then AUDIO.logged = true; log("звук: игра переключила слушателя на %s — вернул на %s", cname(o), cname(AUDIO.owner)) end
       if ExecuteWithDelay then
@@ -1612,6 +1657,7 @@ local function setCoop(on)
     S.enemy.listAt, S.enemy.killAt, S.enemy.bbAt, S.enemy.st, S.enemy.pos = -10000, -10000, {}, {}, {}
     if not acquire() then toast("Не нашёл двух героев — загрузите игру"); return end
     S.coop, S.split = true, false
+    S.repossessDone = false
     -- запоминаем мир, в котором включились: иначе проверка смены уровня,
     -- не успевшая заметить загрузку, сразу же приостановит кооператив
     pcall(function() S.worldName = UEHelpers.GetWorld():GetFullName() end)
@@ -4028,4 +4074,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.9.7 загружен. F9 — меню кооператива")
+log("v9.9.8 загружен. F9 — меню кооператива")
