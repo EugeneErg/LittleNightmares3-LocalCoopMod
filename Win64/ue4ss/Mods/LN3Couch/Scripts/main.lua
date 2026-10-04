@@ -1,4 +1,4 @@
--- LN3Couch v9.10.11 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.10.12 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -590,10 +590,19 @@ local function roomCamTarget()
   if CFG.room_camera == false then return nil end
   local okp, p = pcall(function() return S.buddy:K2_GetActorLocation() end)
   if not okp then return nil end
+  -- особый план предмета (колесо и т.п.) — показываем его как есть, без
+  -- подстройки под положение героя: камера стоит там, где её поставили художники
+  if valid(S.cam2External) then
+    local ok, loc, rot, fov = pcall(function()
+      local cc = S.cam2External.mCameraComponent
+      if not valid(cc) then cc = S.cam2External:GetComponentByClass(StaticFindObject("/Script/Engine.CameraComponent")) end
+      return cc:K2_GetComponentLocation(), cc:K2_GetComponentRotation(), cc.FieldOfView
+    end)
+    if ok and loc then return loc, rot, fov end
+  end
   if S.frames >= RC.pickAt then
     RC.pickAt = S.frames + 10
     local a = pickRoomCam(p)
-    if valid(S.cam2External) then a = S.cam2External end   -- особый план (колесо и т.п.) — у второго
     -- «липкая» комната: пока герой рядом с зоной текущей камеры (запас 2,5 м),
     -- не перескакиваем на другую — рычаги, подсадки и прыжки иначе дёргают камеру
     if a ~= RC.cur and valid(RC.cur) then
@@ -1023,7 +1032,7 @@ local function updateSplit()
   VIS.hiddenFor, VIS.shownFor = 0, 0
   -- Проверка: смена порядка игроков делает игрока 2 «главным» для игры
   -- (камера игрока 1 на колесе уезжает к нему). Пока по умолчанию не меняем.
-  if want then pcall(S.decideSplitSides); if CFG.split_swap_sides == true then pcall(S.setPlayerOrder, S.p2First) end end
+  if want then pcall(S.decideSplitSides); if CFG.split_swap_sides ~= false then pcall(S.setPlayerOrder, S.p2First) end end
   setSplitVisible(want)
   pcall(S.applySplitAspect, want)
   if not want then S.splitLR, S.p2First = nil, false end
@@ -1569,7 +1578,7 @@ end
 -- смерти, когда игра сама вызывает «вернуть звук». Вызываем это сами.
 S.fadeInAudio = function(why)
   if CFG.audio_fadein == false then return end
-  for i, pc in ipairs({ S.pc1, S.pc2 }) do
+  for i, pc in ipairs({ S.pc1 }) do
     if valid(pc) then
       local ok, e, d = S.callGameFn(pc, "/Script/Kosmos.KosmosPlayerController:FadeInAudio", "FadeInAudio")
       trail(string.format("звук: вернул звук через контроллер игрока %d (%s) [%s] — %s", i, why or "", d, ok and "сделано" or ("ошибка: " .. tostring(e))))
@@ -1620,7 +1629,6 @@ local function keepListener()
       if ExecuteWithDelay and not S.audioRespawnDone then
         S.audioRespawnDone = true
         ExecuteWithDelay(1500, function() ExecuteInGameThread(function() pcall(S.fadeInAudio, "после подключения") end) end)
-        ExecuteWithDelay(4000, function() ExecuteInGameThread(function() pcall(S.fadeInAudio, "ещё раз") end) end)
       end
       if not AUDIO.logged then AUDIO.logged = true; log("звук: игра переключила слушателя на %s — вернул на %s", cname(o), cname(AUDIO.owner)) end
       if ExecuteWithDelay then
@@ -4361,4 +4369,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.10.11 загружен. F9 — меню кооператива")
+log("v9.10.12 загружен. F9 — меню кооператива")
