@@ -1,4 +1,4 @@
--- LN3Couch v9.10 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.10.1 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -597,14 +597,20 @@ updateCam2Pose = function()
   pcall(function()
     local bl = S.buddy:K2_GetActorLocation()
     local hidden = false; pcall(function() hidden = S.buddy:IsHidden() end)
-    if S.camFrozenAt and S.frames - S.camFrozenAt < 180 and (hidden or (S.lastBuddyLoc and dist(bl, S.lastBuddyLoc) > 300)) then
-      frozen = true
-    elseif hidden or (S.lastBuddyLoc and dist(bl, S.lastBuddyLoc) > 1500) then
-      -- герой исчез или «улетел» (смерть) — камера остаётся на его последнем месте
+    local jump = S.lastBuddyLoc and dist(bl, S.lastBuddyLoc) or 0
+    if hidden then
+      -- герой спрятан игрой (смерть) — камера стоит на его последнем месте
+      S.camFrozenAt = S.camFrozenAt or S.frames; frozen = true
+    elseif S.camFrozenAt and S.frames - S.camFrozenAt < 180 then
+      frozen = true   -- даём игре закончить перенос героя
+    elseif jump > 1500 and not S.camFrozenAt then
+      -- герой «улетел» (смерть, перенос) — пару секунд держим камеру на месте
       S.camFrozenAt = S.frames; frozen = true
-      trail("вторая камера: герой исчез — держу последнее место")
+      trail("вторая камера: герой перенёсся — жду и ставлю камеру к нему")
     else
-      if S.lastBuddyLoc and dist(bl, S.lastBuddyLoc) > 500 then S.camSnap = true; RC.pickAt = 0 end
+      -- после ожидания (или большого скачка) камера сразу встаёт к герою —
+      -- раньше она могла навсегда остаться на старом месте
+      if S.camFrozenAt or jump > 500 then S.camSnap = true; RC.pickAt = 0 end
       S.lastBuddyLoc = bl; S.camFrozenAt = nil
     end
   end)
@@ -1485,8 +1491,14 @@ S.respawnForAudio = function()
   local dc = nil
   pcall(function() dc = S.p1:GetComponentByClass(StaticFindObject("/Script/Kosmos.KosmosCharacterDeathComponent")) end)
   if not valid(dc) then trail("звук: у героя нет компонента смерти"); return end
-  local ok, e = pcall(function() dc:RespawnPlayers() end)
-  log("звук: возрождение героев для звука — %s", ok and "сделано" or ("ошибка: " .. tostring(e)))
+  local params = {}
+  pcall(function()
+    StaticFindObject("/Script/Kosmos.KosmosCharacterDeathComponent:RespawnPlayers"):ForEachProperty(function(pr)
+      local cn = ""; pcall(function() cn = pr:GetClass():GetFName():ToString() end)
+      params[#params + 1] = pr:GetFName():ToString() .. ":" .. cn
+    end)
+  end)
+  log("звук: параметры возрождения героев: %s (пока не вызываю)", table.concat(params, ", "))
 end
 local function keepListener()
   if not valid(AUDIO.owner) then return end
@@ -1609,6 +1621,7 @@ local function setCoop(on)
     if not acquire() then toast("Не нашёл двух героев — загрузите игру"); return end
     S.coop, S.split = true, false
     S.audioRespawnDone = false
+    S.lastBuddyLoc, S.camFrozenAt = nil, nil   -- место героя с прошлого уровня не годится
     -- запоминаем мир, в котором включились: иначе проверка смены уровня,
     -- не успевшая заметить загрузку, сразу же приостановит кооператив
     pcall(function() S.worldName = UEHelpers.GetWorld():GetFullName() end)
@@ -4024,4 +4037,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.10 загружен. F9 — меню кооператива")
+log("v9.10.1 загружен. F9 — меню кооператива")
