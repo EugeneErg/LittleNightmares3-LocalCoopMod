@@ -1,4 +1,4 @@
--- LN3Couch v9.10.9 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.10.10 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -1562,6 +1562,19 @@ end
 -- смерти. Чинить его так же, как смерть: сразу после подключения игрок 1
 -- погибает и возрождается на контрольной точке (после загрузки сохранения
 -- герои и так на ней). Выключается audio_kill = false.
+-- Звук: контроллер игрока при появлении приглушает весь звук игры (так
+-- игра делает при смерти и загрузке, а потом возвращает его). Новый
+-- контроллер игрока 2 звук приглушает, а вернуть его некому — до первой
+-- смерти, когда игра сама вызывает «вернуть звук». Вызываем это сами.
+S.fadeInAudio = function(why)
+  if CFG.audio_fadein == false then return end
+  for i, pc in ipairs({ S.pc1, S.pc2 }) do
+    if valid(pc) then
+      local ok, e, d = S.callGameFn(pc, "/Script/Kosmos.KosmosPlayerController:FadeInAudio", "FadeInAudio")
+      trail(string.format("звук: вернул звук через контроллер игрока %d (%s) [%s] — %s", i, why or "", d, ok and "сделано" or ("ошибка: " .. tostring(e))))
+    end
+  end
+end
 S.killForAudio = function()
   if CFG.audio_kill == false or not (S.coop and valid(S.p1)) then return end
   local done = false
@@ -1605,7 +1618,8 @@ local function keepListener()
       S.lastListenerFix = now()
       if ExecuteWithDelay and not S.audioRespawnDone then
         S.audioRespawnDone = true
-        ExecuteWithDelay(1500, function() ExecuteInGameThread(function() pcall(S.killForAudio) end) end)
+        ExecuteWithDelay(1500, function() ExecuteInGameThread(function() pcall(S.fadeInAudio, "после подключения") end) end)
+        ExecuteWithDelay(4000, function() ExecuteInGameThread(function() pcall(S.fadeInAudio, "ещё раз") end) end)
       end
       if not AUDIO.logged then AUDIO.logged = true; log("звук: игра переключила слушателя на %s — вернул на %s", cname(o), cname(AUDIO.owner)) end
       if ExecuteWithDelay then
@@ -1719,7 +1733,7 @@ local function setCoop(on)
     -- не успевшая заметить загрузку, сразу же приостановит кооператив
     pcall(function() S.worldName = UEHelpers.GetWorld():GetFullName() end)
     rememberListener()
-    pcall(S.dumpAudioFns)
+    pcall(S.installCamTrace)
     S.ambBase = S.ambienceState()
     if S.ambBase then trail(string.format("звук до кооператива: фон зоны=%s, общий фон=%s", tostring(S.ambBase.v), tostring(S.ambBase.g))) end
     ensurePC2()
@@ -2762,6 +2776,51 @@ S.dumpAudioFns = function()
   end
   pcall(function() scan(StaticFindObject("/Script/Kosmos.KosmosAudioBlueprintLibrary")) end)
   trail("функции звука/ушей: " .. table.concat(out, ", "))
+end
+-- Разбор «камера игрока 1 уезжает к колесу»: записываем вызовы функций
+-- колеса и системы камер игры (не чаще 3 раз за 10 с на функцию).
+S.installCamTrace = function()
+  if S.camTraceOn or CFG.cam_trace == false then return end
+  S.camTraceOn = true
+  local targets = {}
+  pcall(function()
+    ForEachUObject(function(o)
+      pcall(function()
+        local fn = o:GetFullName()
+        if fn:find("^Class /Script/CameraSystemRuntime%.") or fn:find("^BlueprintGeneratedClass /Game/.-BP_Crank") or fn:find("^Class /Script/Kosmos%.KosmosCamera") then
+          targets[#targets + 1] = o
+        end
+      end)
+    end)
+  end)
+  local n = 0
+  for _, cls in ipairs(targets) do
+    local cn = ""; pcall(function() cn = cls:GetFName():ToString() end)
+    pcall(function()
+      cls:ForEachFunction(function(f)
+        pcall(function()
+          local fname = f:GetFName():ToString()
+          if fname:find("^Get") or fname:find("^Is") or fname:find("^Has") or fname:find("Tick") or fname:find("Ubergraph") then return end
+          local full = f:GetFullName():gsub("^Function ", "")
+          RegisterHook(full, function(ctx, ...)
+            S.camTraceCnt = S.camTraceCnt or {}
+            local c = S.camTraceCnt[full]; local t = now()
+            if not c or t - c.t > 10 then c = { t = t, n = 0 }; S.camTraceCnt[full] = c end
+            c.n = c.n + 1; if c.n > 3 then return end
+            local parts = {}
+            for _, prm in ipairs({ ... }) do
+              local okg, v = pcall(function() return prm:get() end)
+              local d = okg and S.audioTraceArg(v) or nil
+              if d and #parts < 4 then parts[#parts + 1] = d end
+            end
+            trail("камера игры: " .. cn .. "." .. fname .. (#parts > 0 and (" (" .. table.concat(parts, ", ") .. ")") or ""))
+          end)
+          n = n + 1
+        end)
+      end)
+    end)
+  end
+  trail(string.format("запись вызовов камер: %d классов, %d функций", #targets, n))
 end
 S.logCam1Pull = function()
   if not S.camPropsDumped then
@@ -4258,4 +4317,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.10.9 загружен. F9 — меню кооператива")
+log("v9.10.10 загружен. F9 — меню кооператива")
