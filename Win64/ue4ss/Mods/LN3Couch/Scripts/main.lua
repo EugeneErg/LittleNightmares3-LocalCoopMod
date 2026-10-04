@@ -1,4 +1,4 @@
--- LN3Couch v9.10.6 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.10.7 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -500,7 +500,7 @@ local function pickRoomCam(p)
   local best, bestPri, bestSize
   for _, a in ipairs(RC.list) do
     local ok, res = pcall(function()
-      if not (valid(a) and a.mEnabled) then return nil end
+      if not (valid(a) and (a.mEnabled or (S.dhMuted and S.dhMuted[a:GetFullName()]))) then return nil end
       local pv = a.mEditablePlayerVolume; if not valid(pv) then return nil end
       local c, yaw, e = boxInfo(pv)
       local lx, ly, lz = toLocal(c, yaw, p)
@@ -511,6 +511,40 @@ local function pickRoomCam(p)
     end
   end
   return best
+end
+-- Стоит ли точка p в зоне комнатной камеры a
+S.inRoomVol = function(a, p)
+  local pv = a.mEditablePlayerVolume; if not valid(pv) then return false end
+  local c, yaw, e = boxInfo(pv)
+  local lx, ly, lz = toLocal(c, yaw, p)
+  return math.abs(lx) <= e.X and math.abs(ly) <= e.Y and math.abs(lz) <= e.Z
+end
+-- Комнатные камеры игры включаются, когда в их зону заходит любой игрок, а
+-- показывает их камера игрока 1. В одиночной игре напарник — не игрок, а у
+-- нас он игрок, поэтому, когда второй уходит в другую зону (к колесу), камера
+-- игрока 1 переключается на камеру той зоны. Пока экран разделён, камеры
+-- зон, где стоит только игрок 2, для игры выключаем (у второго своя камера,
+-- она их по-прежнему видит), потом включаем обратно.
+S.dhMuted = S.dhMuted or {}
+S.muteP2Rooms = function()
+  local list = FindAllOf("DollhouseCameraActor") or {}
+  local p1l, p2l = S.p1:K2_GetActorLocation(), S.buddy:K2_GetActorLocation()
+  for _, a in ipairs(list) do
+    pcall(function()
+      if not valid(a) then return end
+      local key = a:GetFullName()
+      local muted = S.dhMuted[key]
+      local onlyP2 = S.split and S.inRoomVol(a, p2l) and not S.inRoomVol(a, p1l)
+      if onlyP2 and not muted and a.mEnabled then
+        a.mEnabled = false; S.dhMuted[key] = a
+        trail("камера 1: зона " .. a:GetFName():ToString() .. " только у игрока 2 — для камеры игрока 1 выключил")
+      elseif muted and not onlyP2 then
+        a.mEnabled = true; S.dhMuted[key] = nil
+      end
+    end)
+  end
+  -- зоны, которые пропали из списка (выгрузились), просто забываем
+  for k, a in pairs(S.dhMuted) do if not valid(a) then S.dhMuted[k] = nil end end
 end
 local function roomCamPose(a, p)
   local cc = a.mCameraComponent
@@ -2663,32 +2697,22 @@ end
 -- Для разбора «камера игрока 1 уезжает к колесу»: что сейчас влияет на неё
 S.logCam1Pull = function()
   local cm = S.pc1.PlayerCameraManager
-  local parts = {}
-  pcall(function()
-    local vt = cm:GetViewTarget(); parts[#parts + 1] = "вид=" .. clsName(vt)
-  end)
-  local cls = StaticFindObject(S.POI_CLASS)
   local p1l = S.p1:K2_GetActorLocation()
-  pcall(function()
-    for _, c in ipairs(FindAllOf(cls:GetFName():ToString()) or {}) do
-      local okw, w = pcall(function() return c.mWeight end)
-      if valid(c) and okw and w and w > 0 then
-        local on = "?"; pcall(function() on = c:GetOwner():GetFName():ToString() end)
-        local d = -1; pcall(function() d = dist(c:K2_GetComponentLocation(), p1l) end)
-        parts[#parts + 1] = string.format("%s %.2f (%.0f см)", on, w, d)
-      end
-    end
-  end)
-  local key = table.concat(parts, "; ")
-  if key ~= S.cam1PullKey then
-    S.cam1PullKey = key
-    local okc, cl = pcall(function() return cm:GetCameraLocation() end)
-    trail(string.format("камера 1 (разделён): до Low %.0f см | %s", okc and dist(cl, p1l) or -1, key))
+  local function nm(x) return valid(x) and x:GetFName():ToString() or "нет" end
+  local r1, r2 = nil, nil
+  pcall(function() r1 = pickRoomCam(p1l); r2 = pickRoomCam(S.buddy:K2_GetActorLocation()) end)
+  local n = 0; for _ in pairs(S.dhMuted) do n = n + 1 end
+  local key = nm(r1) .. "/" .. nm(r2) .. "/" .. n
+  local okc, cl = pcall(function() return cm:GetCameraLocation() end)
+  local d = okc and dist(cl, p1l) or -1
+  if key ~= S.cam1PullKey or math.abs(d - (S.cam1PullD or 0)) > 400 then
+    S.cam1PullKey, S.cam1PullD = key, d
+    trail(string.format("камера 1 (разделён): до Low %.0f см | зона игрока 1: %s, игрока 2: %s, выключено зон: %d", d, nm(r1), nm(r2), n))
   end
 end
 S.midCamTick = function()
   if S.frames % 6 == 3 then S.dyingNow = S.anyDying() end
-  if S.frames % 10 == 5 and (S.split or next(S.poiMuted)) then pcall(S.suppressPOIs) end
+  if S.frames % 10 == 5 and (S.split or next(S.dhMuted)) then pcall(S.muteP2Rooms) end
   if S.split and S.frames % 60 == 15 then pcall(S.logCam1Pull) end
   if CFG.shared_center == false then return end
   local c = S.ensurePOI()
@@ -4161,4 +4185,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.10.6 загружен. F9 — меню кооператива")
+log("v9.10.7 загружен. F9 — меню кооператива")
