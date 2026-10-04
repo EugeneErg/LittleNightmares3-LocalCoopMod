@@ -1,4 +1,4 @@
--- LN3Couch v9.8.3 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.9 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -802,7 +802,7 @@ local function wantSplit()
   end
   local ok, d = pcall(function() return S.p1:GetDistanceTo(S.buddy) end)
   if not ok then return S.split end
-  local on, off = CFG.split_on_distance, CFG.split_on_distance * 0.66
+  local on = CFG.split_on_distance or 900; local off = on * 0.66
   if S.split then return d > off else return d > on end
 end
 
@@ -3534,13 +3534,12 @@ local function injectPause(w, kind)
   if kind == "main" then pcall(function() PM.coopBtn:SetVisibility(0) end) end
   PM.kind = kind or "pause"
   log(kind == "main" and "главное меню: пункт «Кооператив» добавлен" or "меню паузы: пункт «Кооператив» добавлен")
-  pcall(S.dumpStrings)
 end
 
 -- Разовый разбор экранов игры (главное меню, настройки, пауза): какие там
 -- окна, кнопки и надписи на текущем языке. Нужен, чтобы встроить пункт
 -- «Кооператив» в главное меню и брать слова для меню мода у самой игры.
--- Пишется в ue4ss/Mods/LN3Couch/ui_dump.txt; выключается ui_dump = false.
+-- Пишется в ue4ss/Mods/LN3Couch/ui_dump.txt; включается ui_dump = true.
 S.uiSeen = {}
 S.uiText = function(w)
   local t = nil
@@ -3571,7 +3570,7 @@ S.uiTree = function(f, w, depth)
   if okc and valid(content) and #children(w) == 0 then S.uiTree(f, content, depth + 1) end
 end
 S.uiDumpTick = function()
-  if CFG.ui_dump == false or S.frames % 60 ~= 30 then return end
+  if CFG.ui_dump ~= true or S.frames % 60 ~= 30 then return end
   -- 1) все надписи игры, какие сейчас существуют, с путём до них
   local nNew = 0
   local f = nil
@@ -3904,4 +3903,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.8.3 загружен. F9 — меню кооператива")
+log("v9.9 загружен. F9 — меню кооператива")
