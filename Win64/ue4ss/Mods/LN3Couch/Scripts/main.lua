@@ -1,4 +1,4 @@
--- LN3Couch v9.5 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.6 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -328,7 +328,7 @@ local function gms() return UEHelpers.GetGameMapsSettings() end
 -- split_layout = "top_bottom" или "left_right".
 S.layoutLR = function()
   if CFG.split_layout_force == "left_right" then return true end
-  if CFG.split_layout_force == "top_bottom" then return false end
+  if CFG.split_layout_force == "top_bottom" or CFG.split_sides == "top_bottom" then return false end
   if S.splitLR ~= nil then return S.splitLR end
   if not S.aspect then
     pcall(function()
@@ -451,6 +451,7 @@ end
 
 local function removePC2()
   if valid(S.lp2) and valid(S.pc2) then try("reattach", function() S.lp2.PlayerController = S.pc2 end) end
+  if S.playersSwapped then pcall(S.setPlayerOrder, false) end
   try("split off", function() gms().bUseSplitscreen = false end)
   S.split, S.lp2 = false, nil
   if valid(S.pc2) then
@@ -833,6 +834,7 @@ S.decideSplitSides = function()
     if not (ax and ay and bx and by) then return end
     local dx, dy = bx - ax, by - ay          -- в пикселях: сравнимо по обеим осям
     S.splitLR = math.abs(dx) >= math.abs(dy)
+    if CFG.split_sides == "top_bottom" then S.splitLR = false end
     S.p2First = S.splitLR and (dx < 0) or (not S.splitLR and dy < 0)
     trail(string.format("экран: второй %s первого (dx=%.0f, dy=%.0f) — делю %s, второй %s",
       S.splitLR and (dx < 0 and "левее" or "правее") or (dy < 0 and "выше" or "ниже"), dx, dy,
@@ -872,49 +874,44 @@ S.applySplitAspect = function(on)
     A.cams = {}
   end
 end
--- Движок ставит первого игрока всегда слева/сверху. Если второй должен быть
--- слева/сверху — каждый кадр меняем половины местами.
-S.applySplitOrigins = function()
-  if not (S.split and S.p2First and S.splitLR ~= nil) then return end
+-- Движок раскладывает половины экрана по порядку локальных игроков: первый
+-- в списке — слева/сверху. Origin он пересчитывает каждый кадр, поэтому
+-- меняем местами самих игроков в списке. Геймпады движок ищет по номеру
+-- контроллера, а не по месту в списке, так что люди, герои и геймпады
+-- остаются при своих — меняются только половины экрана.
+S.localPlayers = function()
+  local gi = nil
+  pcall(function() gi = S.pc1:GetGameInstance() end)
+  if not valid(gi) then pcall(function() gi = FindFirstOf("GameInstance") end) end
+  if not valid(gi) then return nil end
+  local arr = nil; pcall(function() arr = gi.LocalPlayers end)
+  return arr
+end
+-- перед загрузкой уровня порядок игроков всегда возвращаем обычный: движок
+-- раздаёт новые контроллеры по этому списку
+pcall(function()
+  RegisterLoadMapPreHook(function()
+    if S.playersSwapped then pcall(S.setPlayerOrder, false) end
+  end)
+end)
+S.setPlayerOrder = function(p2First)
+  local arr = S.localPlayers()
+  if not arr then return end
   local lp1 = nil; pcall(function() lp1 = S.pc1.Player end)
   local lp2 = S.lp2
   if not (valid(lp1) and valid(lp2)) then return end
-  local check = S.originCheck
-  if check then
-    S.originCheck = nil
-    local okr, ox = pcall(function() return lp2.Origin.X + lp2.Origin.Y end)
-    if not S.originLogged then
-      S.originLogged = true
-      trail(string.format("экран: смена половин %s", (okr and ox < 0.01) and "держится" or "сбрасывается движком"))
-    end
-  end
-  pcall(function()
-    if S.splitLR then lp1.Origin = { X = 0.5, Y = 0 } else lp1.Origin = { X = 0, Y = 0.5 } end
-    lp2.Origin = { X = 0, Y = 0 }
-  end)
-  S.originCheck = true
-end
-S.hookSplitFrame = function()
-  if S.splitHookTried or not valid(S.p1) then return end
-  S.splitHookTried = true
-  local c = S.p1:GetClass()
-  local depth = 0
-  while valid(c) and depth < 8 do
-    local found = nil
-    pcall(function() c:ForEachFunction(function(f) if f:GetFName():ToString() == "ReceiveTick" then found = f:GetFullName():gsub("^Function ", "") end end) end)
-    if found then
-      pcall(function()
-        RegisterHook(found, function(ctx)
-          if ctx:get() ~= S.p1 then return end
-          pcall(S.applySplitOrigins)
-        end)
-      end)
-      return
-    end
-    local ok, sup = pcall(function() return c:GetSuperStruct() end)
-    c = ok and sup or nil
-    depth = depth + 1
-  end
+  local n = 0; pcall(function() n = arr:GetArrayNum() end)
+  if n ~= 2 then return end
+  local a1, a2 = arr[1], arr[2]
+  local firstIsP2 = valid(a1) and a1:GetAddress() == lp2:GetAddress()
+  if firstIsP2 == (p2First and true or false) then return end
+  local want1, want2 = (p2First and lp2 or lp1), (p2First and lp1 or lp2)
+  local ok, err = pcall(function() arr[1] = want1; arr[2] = want2 end)
+  local now1 = nil; pcall(function() now1 = arr[1] end)
+  local held = valid(now1) and now1:GetAddress() == want1:GetAddress()
+  S.playersSwapped = held and p2First or false
+  trail(string.format("экран: порядок игроков %s — %s%s", p2First and "второй первым" or "обычный",
+    held and "получилось" or "не получилось", ok and "" or (" (" .. tostring(err) .. ")")))
 end
 setSplitVisible = function(on)
   try("split visible", function()
@@ -934,7 +931,10 @@ setSplitVisible = function(on)
     end
   end)
   S.split = on
-  if not on then pcall(S.applySplitAspect, false); S.splitLR, S.p2First = nil, false end
+  if not on then
+    pcall(S.applySplitAspect, false); S.splitLR, S.p2First = nil, false
+    if S.playersSwapped then pcall(S.setPlayerOrder, false) end
+  end
 end
 
 local function applyGamepadRouting()
@@ -957,7 +957,7 @@ local function updateSplit()
     end
   end
   VIS.hiddenFor, VIS.shownFor = 0, 0
-  if want then pcall(S.decideSplitSides); pcall(S.hookSplitFrame) end
+  if want then pcall(S.decideSplitSides); pcall(S.setPlayerOrder, S.p2First) end
   setSplitVisible(want)
   pcall(S.applySplitAspect, want)
   if not want then S.splitLR, S.p2First = nil, false end
@@ -1064,6 +1064,7 @@ S.EN = {
   ["Экран"] = "Screen",
   ["Авто (когда не видно)"] = "Auto (split when needed)", ["По расстоянию"] = "By distance",
   ["Всегда разделён"] = "Always split", ["Всегда общий"] = "Always shared",
+  ["Разделение"] = "Split", ["Авто (как стоят герои)"] = "Auto (by where heroes are)", ["Всегда сверху/снизу"] = "Always top/bottom",
   ["Делить экран с расстояния"] = "Split at distance", ["Делить экран с"] = "Split at",
   ["Кнопки игрока 2  >"] = "Player 2 buttons  >", ["Кнопки игрока 2"] = "Player 2 buttons",
   ["Сбросить настройки"] = "Reset settings", ["Закрыть  (F9)"] = "Close  (F9)",
@@ -3027,6 +3028,7 @@ do
     "Gamepad_RightThumbstick","Gamepad_LeftThumbstick" }) do CAPTURE_KEYS[#CAPTURE_KEYS + 1] = n end
 end
 
+S.SPLIT_SIDES = { { "auto", "Авто (как стоят герои)" }, { "top_bottom", "Всегда сверху/снизу" } }
 local SPLIT_MODES = { { "auto", "Авто (когда не видно)" }, { "distance", "По расстоянию" }, { "always", "Всегда разделён" }, { "never", "Всегда общий" } }
 local LAYOUTS = { { "top_bottom", "Сверху и снизу" }, { "left_right", "Слева и справа" } }
 local DEVICES = { { "keyboard", "Клавиатура (правая часть)" }, { "gamepad", "Геймпад" } }
@@ -3059,6 +3061,9 @@ local function mainMenu()
       { label = function() return "Экран" end, value = function() return optTitle(SPLIT_MODES, CFG.split) end,
         left = function() CFG.split = optCycle(SPLIT_MODES, CFG.split, -1); changed() end,
         right = function() CFG.split = optCycle(SPLIT_MODES, CFG.split, 1); changed() end },
+      { label = function() return "Разделение" end, value = function() return optTitle(S.SPLIT_SIDES, CFG.split_sides or "auto") end,
+        left = function() CFG.split_sides = optCycle(S.SPLIT_SIDES, CFG.split_sides or "auto", -1); changed() end,
+        right = function() CFG.split_sides = optCycle(S.SPLIT_SIDES, CFG.split_sides or "auto", 1); changed() end },
       { label = function() return "Делить экран с расстояния" end, value = function() return string.format("%d м", math.floor(CFG.split_on_distance / 100 + 0.5)) end,
         left = function() CFG.split_on_distance = math.max(300, CFG.split_on_distance - 100); changed() end,
         right = function() CFG.split_on_distance = math.min(3000, CFG.split_on_distance + 100); changed() end },
@@ -3322,6 +3327,8 @@ local function coopItems()
     { function() return "Найти геймпад игрока 2" end, function() S.detectPending = true; toast("Закройте паузу и нажимайте A на геймпаде игрока 2") end },
     { function() return "Экран: " .. optTitle(SPLIT_MODES, CFG.split) end,
       function() CFG.split = optCycle(SPLIT_MODES, CFG.split, 1); saveSettings() end },
+    { function() return "Разделение: " .. optTitle(S.SPLIT_SIDES, CFG.split_sides or "auto") end,
+      function() CFG.split_sides = optCycle(S.SPLIT_SIDES, CFG.split_sides or "auto", 1); saveSettings() end },
     { function() return string.format("Делить экран с: %d м", math.floor(CFG.split_on_distance / 100 + 0.5)) end,
       function() CFG.split_on_distance = CFG.split_on_distance + 300; if CFG.split_on_distance > 3000 then CFG.split_on_distance = 300 end; saveSettings() end },
     { function() return "Кнопки игрока 2" end, function() showPage("keys") end },
@@ -3708,4 +3715,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.5 загружен. F9 — меню кооператива")
+log("v9.6 загружен. F9 — меню кооператива")
