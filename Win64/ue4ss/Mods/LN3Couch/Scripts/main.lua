@@ -1,4 +1,4 @@
--- LN3Couch v9.3 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.4 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -322,10 +322,25 @@ end
 
 ------------------------------------------------------------------ второй вид и камера
 local function gms() return UEHelpers.GetGameMapsSettings() end
+-- Как делить экран. По умолчанию — сам: на обычном экране сверху и снизу
+-- (каждой половине остаётся широкий кадр, как в игре), на сверхшироком
+-- (21:9 и шире) — слева и справа. В settings.lua можно задать
+-- split_layout = "top_bottom" или "left_right".
+S.layoutLR = function()
+  if CFG.split_layout == "left_right" then return true end
+  if CFG.split_layout == "top_bottom" then return false end
+  if not S.aspect then
+    pcall(function()
+      local vs = StaticFindObject("/Script/UMG.Default__WidgetLayoutLibrary"):GetViewportSize(S.pc1)
+      if vs.X > 0 and vs.Y > 0 then S.aspect = vs.X / vs.Y; log("экран %dx%d — делю %s", vs.X, vs.Y, S.aspect >= 2.0 and "слева и справа" or "сверху и снизу") end
+    end)
+  end
+  return (S.aspect or 1.78) >= 2.0
+end
 local function applyLayout()
   try("layout", function()
     local g = gms()
-    g.TwoPlayerSplitscreenLayout = (CFG.split_layout == "left_right") and 1 or 0
+    g.TwoPlayerSplitscreenLayout = S.layoutLR() and 1 or 0
   end)
 end
 
@@ -710,7 +725,7 @@ local function buddyScreenPos()
     local W, H = vs.X, vs.Y
     if not (W and H and W > 0 and H > 0) then return nil end
     if S.split then
-      if CFG.split_layout == "left_right" then W = W / 2 else H = H / 2 end
+      if S.layoutLR() then W = W / 2 else H = H / 2 end
     end
     local loc = S.buddy:K2_GetActorLocation()
     local out = {}
@@ -751,7 +766,7 @@ local function wantSplit()
       -- в целом кадре (берём худший случай), и объединяем только если он там уверенно.
       local q = p
       if p and p.inFront then
-        if CFG.split_layout == "left_right" then q = { inFront = true, x = p.x, y = 0.5 + (p.y - 0.5) * 2 }
+        if S.layoutLR() then q = { inFront = true, x = p.x, y = 0.5 + (p.y - 0.5) * 2 }
         else q = { inFront = true, x = 0.5 + (p.x - 0.5) * 2, y = p.y } end
       end
       -- объединяем, когда герои в одной комнате и напарник уверенно в кадре,
@@ -807,7 +822,7 @@ end
 setSplitVisible = function(on)
   try("split visible", function()
     local g = gms()
-    g.TwoPlayerSplitscreenLayout = (CFG.split_layout == "left_right") and 1 or 0
+    g.TwoPlayerSplitscreenLayout = S.layoutLR() and 1 or 0
     g.bUseSplitscreen = on
     local lp2 = S.lp2
     if valid(lp2) then
@@ -919,7 +934,118 @@ local function resetBuddyInput()
   S.prev = {}
 end
 
-local function toast(msg) S.toast, S.toastUntil = msg, now() + 2.5 end
+
+------------------------------------------------------------------ язык интерфейса мода
+-- Тексты мода написаны по-русски. Если игра не на русском — показываем
+-- английский перевод. Язык берём у самой игры (можно задать в settings.lua:
+-- language = "ru" / "en").
+S.EN = {
+  ["Сначала включите второго игрока"] = "Turn on Player 2 first",
+  ["Нажимайте A на геймпаде игрока 2…"] = "Press A on Player 2's gamepad…",
+  ["Геймпад игрока 2 найден!"] = "Player 2's gamepad found!",
+  ["Геймпад игрока 2 не отвечает — проверьте подключение"] = "Player 2's gamepad is not responding — check the connection",
+  ["Не нашёл двух героев — загрузите игру"] = "Couldn't find both heroes — load a game first",
+  ["Игрок 2 подключён"] = "Player 2 joined",
+  ["Напарником снова управляет ИИ"] = "The AI controls the companion again",
+  ["Настройки сброшены"] = "Settings reset",
+  ["Назначено"] = "Assigned",
+  ["Закройте паузу и нажимайте A на геймпаде игрока 2"] = "Close the pause menu and press A on Player 2's gamepad",
+  ["Кооператив"] = "Co-op",
+  ["КООПЕРАТИВ — LN3Couch"] = "CO-OP — LN3Couch",
+  ["Второй игрок"] = "Player 2",
+  ["ВКЛЮЧЁН"] = "ON", ["включён"] = "on", ["выключен"] = "off",
+  ["Управление игрока 2"] = "Player 2 controls",
+  ["Клавиатура (правая часть)"] = "Keyboard (right side)", ["Геймпад"] = "Gamepad",
+  ["Геймпад №1 у"] = "Gamepad #1 belongs to", ["игрока 1"] = "Player 1", ["игрока 2"] = "Player 2",
+  ["Найти геймпад игрока 2"] = "Find Player 2's gamepad",
+  ["Экран"] = "Screen",
+  ["Авто (когда не видно)"] = "Auto (split when needed)", ["По расстоянию"] = "By distance",
+  ["Всегда разделён"] = "Always split", ["Всегда общий"] = "Always shared",
+  ["Делить экран с расстояния"] = "Split at distance", ["Делить экран с"] = "Split at",
+  ["Кнопки игрока 2  >"] = "Player 2 buttons  >", ["Кнопки игрока 2"] = "Player 2 buttons",
+  ["Сбросить настройки"] = "Reset settings", ["Закрыть  (F9)"] = "Close  (F9)",
+  ["Назад"] = "Back", ["<  Назад"] = "<  Back",
+  ["КНОПКИ ИГРОКА 2 — геймпад"] = "PLAYER 2 BUTTONS — gamepad", ["КЛАВИШИ ИГРОКА 2 — клавиатура"] = "PLAYER 2 KEYS — keyboard",
+  ["Ходьба"] = "Move", ["левый стик"] = "left stick",
+  ["…нажмите кнопку"] = "…press a button", ["по умолчанию"] = "default",
+  ["Вперёд"] = "Forward", ["Влево"] = "Left", ["Вправо"] = "Right", ["Прыжок"] = "Jump",
+  ["Схватить / нести (держать)"] = "Grab / carry (hold)", ["Бросить (или прыжок с предметом)"] = "Throw (or jump while carrying)",
+  ["Достать/убрать ключ или лук"] = "Take out / put away wrench or bow", ["Присесть (держать)"] = "Crouch (hold)", ["Бег (держать)"] = "Run (hold)",
+  ["Стрелка вверх"] = "Up arrow", ["Стрелка вниз"] = "Down arrow", ["Стрелка влево"] = "Left arrow", ["Стрелка вправо"] = "Right arrow",
+  ["Пробел"] = "Space", ["Правый Shift"] = "Right Shift", ["Левый Shift"] = "Left Shift",
+  ["Правый Ctrl"] = "Right Ctrl", ["Левый Ctrl"] = "Left Ctrl", ["Правый Alt"] = "Right Alt", ["Левый Alt"] = "Left Alt",
+  ["A / Крест"] = "A / Cross", ["B / Круг"] = "B / Circle", ["X / Квадрат"] = "X / Square", ["Y / Треугольник"] = "Y / Triangle",
+  ["Нажмите кнопку для назначения.  Backspace — отмена"] = "Press a button to assign.  Backspace — cancel",
+  ["Стрелки — выбор,  ← → изменить,  Enter — выбрать,  Backspace — назад,  F9 — закрыть"] = "Arrows — select,  ← → change,  Enter — choose,  Backspace — back,  F9 — close",
+}
+S.gameLanguage = function()
+  if S.lang then return S.lang end
+  local want = CFG and CFG.language
+  if want == "ru" or want == "en" then S.lang = want; return want end
+  local code = nil
+  pcall(function()
+    local lib = StaticFindObject("/Script/Engine.Default__KismetInternationalizationLibrary")
+    local r = lib:GetCurrentLanguage()
+    if type(r) == "string" then code = r else code = r:ToString() end
+  end)
+  if not code or code == "" then
+    pcall(function()
+      local lib = StaticFindObject("/Script/Engine.Default__KismetInternationalizationLibrary")
+      local r = lib:GetCurrentCulture()
+      if type(r) == "string" then code = r else code = r:ToString() end
+    end)
+  end
+  if not code or code == "" then return "ru" end   -- не узнали — не запоминаем, спросим позже
+  S.lang = (code:sub(1, 2):lower() == "ru") and "ru" or "en"
+  pcall(function() log("язык интерфейса мода: %s (язык игры %s)", S.lang, code) end)
+  return S.lang
+end
+-- Разовая выгрузка таблиц строк игры (для перевода меню мода словами самой
+-- игры). Пишется один раз в ue4ss/Mods/LN3Couch/game_strings.txt.
+S.dumpStrings = function()
+  if S.stringsDumped then return end
+  S.stringsDumped = true
+  local path = "ue4ss/Mods/LN3Couch/game_strings.txt"
+  local ex = io.open(path, "r"); if ex then ex:close(); return end
+  local lib = StaticFindObject("/Script/Engine.Default__KismetStringTableLibrary")
+  if not valid(lib) then log("таблицы строк: библиотека не найдена"); return end
+  local function list(x)
+    local out = {}
+    if type(x) == "table" then for _, v in ipairs(x) do out[#out + 1] = v end
+    elseif x then pcall(function() x:ForEach(function(_, el) out[#out + 1] = el:get() end) end) end
+    return out
+  end
+  local function str(v) if type(v) == "string" then return v end local ok, r = pcall(function() return v:ToString() end); return ok and r or tostring(v) end
+  local f = io.open(path, "w"); if not f then return end
+  f:write("-- таблицы строк игры: таблица | ключ | исходный текст | текст на текущем языке\n")
+  local nT, nK = 0, 0
+  pcall(function()
+    for _, tid in ipairs(list(lib:GetRegisteredStringTables())) do
+      nT = nT + 1
+      local tname = str(tid)
+      for _, key in ipairs(list(lib:GetKeysFromStringTable(tid))) do
+        local kname = str(key)
+        local src, loc = "", ""
+        pcall(function() src = str(lib:GetTableEntrySourceString(tid, key)) end)
+        pcall(function() loc = StaticFindObject("/Script/Engine.Default__KismetTextLibrary"):TextFromStringTable(tid, key):ToString() end)
+        f:write(tname, " | ", kname, " | ", (src:gsub("\n", "\\n")), " | ", (loc:gsub("\n", "\\n")), "\n")
+        nK = nK + 1
+      end
+    end
+  end)
+  f:close()
+  log("таблицы строк игры: %d таблиц, %d строк — записал в game_strings.txt", nT, nK)
+end
+S.T = function(s)
+  if type(s) ~= "string" or s == "" or S.gameLanguage() == "ru" then return s end
+  if S.EN[s] then return S.EN[s] end
+  local a, b = s:match("^(.-): (.*)$")
+  if a then return S.T(a) .. ": " .. S.T(b) end
+  local n = s:match("^(%d+) м$"); if n then return n .. " m" end
+  local k = s:match("^Цифр%. (.*)$"); if k then return "Num " .. k end
+  return s
+end
+local function toast(msg) S.toast, S.toastUntil = S.T(msg), now() + 2.5 end
 
 -- Режим «настоящий второй игрок»: героем напарника управляет второй
 -- игровой контроллер — как у игрока 1, со всеми действиями игры (ящики,
@@ -2823,9 +2949,6 @@ local function mainMenu()
       { label = function() return "Экран" end, value = function() return optTitle(SPLIT_MODES, CFG.split) end,
         left = function() CFG.split = optCycle(SPLIT_MODES, CFG.split, -1); changed() end,
         right = function() CFG.split = optCycle(SPLIT_MODES, CFG.split, 1); changed() end },
-      { label = function() return "Разделение" end, value = function() return optTitle(LAYOUTS, CFG.split_layout) end,
-        left = function() CFG.split_layout = optCycle(LAYOUTS, CFG.split_layout, -1); applyLayout(); changed() end,
-        right = function() CFG.split_layout = optCycle(LAYOUTS, CFG.split_layout, 1); applyLayout(); changed() end },
       { label = function() return "Делить экран с расстояния" end, value = function() return string.format("%d м", math.floor(CFG.split_on_distance / 100 + 0.5)) end,
         left = function() CFG.split_on_distance = math.max(300, CFG.split_on_distance - 100); changed() end,
         right = function() CFG.split_on_distance = math.min(3000, CFG.split_on_distance + 100); changed() end },
@@ -2992,17 +3115,17 @@ local function updateUI()
   if not (S.menuOpen or showToast) then hideUI(); return end
   if not buildUI() then return end
   if S.menuOpen then
-    local lines = { { S.menu.title, GOLD }, { " ", WHITE } }
+    local lines = { { S.T(S.menu.title), GOLD }, { " ", WHITE } }
     for i, it in ipairs(S.menu.items) do
       local sel = (i == S.sel)
-      local v = it.value()
-      local txt = (sel and "»  " or "     ") .. it.label()
+      local v = S.T(it.value())
+      local txt = (sel and "»  " or "     ") .. S.T(it.label())
       if v ~= "" then txt = txt .. ":   " .. ((sel and it.left) and ("< " .. v .. " >") or v) end
       lines[#lines + 1] = { txt, sel and GOLD or WHITE }
     end
     lines[#lines + 1] = { " ", WHITE }
-    lines[#lines + 1] = { S.capture and "Нажмите кнопку для назначения.  Backspace — отмена"
-      or "Стрелки — выбор,  ← → изменить,  Enter — выбрать,  Backspace — назад,  F9 — закрыть", GREY }
+    lines[#lines + 1] = { S.T(S.capture and "Нажмите кнопку для назначения.  Backspace — отмена"
+      or "Стрелки — выбор,  ← → изменить,  Enter — выбрать,  Backspace — назад,  F9 — закрыть"), GREY }
     if showToast then lines[#lines + 1] = { S.toast, GOLD } end
     renderLines(lines, "menu")
   else
@@ -3035,6 +3158,7 @@ local function findPanelWithChild(w, childName, depth)
 end
 
 local function setBtnText(btn, text)
+  text = S.T(text)
   try("btn text", function()
     pcall(function() btn.ButtonText = FText(text) end)
     pcall(function() btn.LocalisedString = FText(text) end)
@@ -3088,8 +3212,6 @@ local function coopItems()
     { function() return "Найти геймпад игрока 2" end, function() S.detectPending = true; toast("Закройте паузу и нажимайте A на геймпаде игрока 2") end },
     { function() return "Экран: " .. optTitle(SPLIT_MODES, CFG.split) end,
       function() CFG.split = optCycle(SPLIT_MODES, CFG.split, 1); saveSettings() end },
-    { function() return "Разделение: " .. optTitle(LAYOUTS, CFG.split_layout) end,
-      function() CFG.split_layout = optCycle(LAYOUTS, CFG.split_layout, 1); applyLayout(); saveSettings() end },
     { function() return string.format("Делить экран с: %d м", math.floor(CFG.split_on_distance / 100 + 0.5)) end,
       function() CFG.split_on_distance = CFG.split_on_distance + 300; if CFG.split_on_distance > 3000 then CFG.split_on_distance = 300 end; saveSettings() end },
     { function() return "Кнопки игрока 2" end, function() showPage("keys") end },
@@ -3197,6 +3319,7 @@ local function injectPause(w)
   if not okIns then error(errIns) end
   PM.orig[#PM.orig + 1] = PM.coopBtn
   log("меню паузы: пункт «Кооператив» добавлен")
+  pcall(S.dumpStrings)
 end
 
 local pauseOpenCache, pauseOpenAt = false, -100
@@ -3467,4 +3590,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.3 загружен. F9 — меню кооператива")
+log("v9.4 загружен. F9 — меню кооператива")

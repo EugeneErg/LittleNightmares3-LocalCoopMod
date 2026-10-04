@@ -36,7 +36,8 @@ return {
   split = "auto",
   split_on_distance  = 900,   -- разделить, если дальше (в сантиметрах игры)
   -- расположение: "top_bottom" (сверху и снизу) или "left_right"
-  split_layout = "top_bottom",
+  split_layout = "auto",     -- "auto" (сам по экрану), "top_bottom" или "left_right"
+  language = "auto",         -- язык меню мода: "auto" (как в игре), "ru" или "en"
 
   -- Если направления перепутаны
   swap_axes = false, invert_forward = false, invert_right = false,

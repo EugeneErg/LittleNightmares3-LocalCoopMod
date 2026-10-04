@@ -28,7 +28,7 @@ return {
   p2_controller_confirmed = false,
   p2_controller_id = 1,
   split = "auto",
-  split_layout = "top_bottom",
+  split_layout = "auto",
   split_on_distance = 900,
   swap_axes = false,
 }
