@@ -1,4 +1,4 @@
--- LN3Couch v9.11.10 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.11.11 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -2343,6 +2343,32 @@ S.invDiag = function(label)
     trail("инвентарь: класс " .. tostring(S.invClassName))
   end
   local out = {}
+  -- поля самой вещи (объекты, флаги): кто её «хозяин» для игры
+  pcall(function()
+    for _, a in ipairs(FindAllOf("BP_Flashlight_Inventory_C") or {}) do
+      local parts = {}
+      local cls, depth = a:GetClass(), 0
+      while valid(cls) and depth < 5 do
+        local cn = cls:GetFName():ToString(); if cn == "Actor" then break end
+        pcall(function()
+          cls:ForEachProperty(function(pr)
+            local n = pr:GetFName():ToString()
+            local pt = ""; pcall(function() pt = pr:GetClass():GetFName():ToString() end)
+            pcall(function()
+              local x = a[n]
+              if pt:find("Object") and not pt:find("Class") then
+                local v = valid(x) and cname(x) or "nil"
+                if not (v:find("Component") or v:find("Curve") or v:find("Material") or v:find("Montage") or v:find("Anim")) then parts[#parts + 1] = n .. "=" .. v end
+              elseif pt == "BoolProperty" then parts[#parts + 1] = n .. "=" .. tostring(x)
+              end
+            end)
+          end)
+        end)
+        local ok, sup = pcall(function() return cls:GetSuperStruct() end); cls = ok and sup or nil; depth = depth + 1
+      end
+      out[#out + 1] = "поля фонарика: " .. table.concat(parts, "; ")
+    end
+  end)
   -- все фонарики и их состояние
   pcall(function()
     local fl = {}
@@ -4366,4 +4392,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.11.10 загружен. F9 — меню кооператива")
+log("v9.11.11 загружен. F9 — меню кооператива")
