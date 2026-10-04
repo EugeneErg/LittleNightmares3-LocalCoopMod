@@ -1484,25 +1484,6 @@ S.audioProbeTick = function()
   S.audioProbeLast = line
   trail(string.format("звук (%s): %s", S.split and "разделён" or "общий", line))
 end
--- Звук после подключения второго игрока. Игра в своём коде переносит «уши»
--- на камеру второго игрока, и даже когда мы возвращаем их игроку 1, весь
--- звук молчит — до первой смерти. При смерти его чинит возрождение героев.
--- Поэтому сразу после подключения второго игрока один раз вызываем
--- возрождение игры (без самой смерти): герои остаются на точке, звук есть.
-S.respawnForAudio = function()
-  if CFG.audio_respawn == false or not (S.coop and valid(S.p1)) then return end
-  local dc = nil
-  pcall(function() dc = S.p1:GetComponentByClass(StaticFindObject("/Script/Kosmos.KosmosCharacterDeathComponent")) end)
-  if not valid(dc) then trail("звук: у героя нет компонента смерти"); return end
-  local params = {}
-  pcall(function()
-    StaticFindObject("/Script/Kosmos.KosmosCharacterDeathComponent:RespawnPlayers"):ForEachProperty(function(pr)
-      local cn = ""; pcall(function() cn = pr:GetClass():GetFName():ToString() end)
-      params[#params + 1] = pr:GetFName():ToString() .. ":" .. cn
-    end)
-  end)
-  log("звук: параметры возрождения героев: %s (пока не вызываю)", table.concat(params, ", "))
-end
 local function keepListener()
   if not valid(AUDIO.owner) then return end
   local o = listenerOwner()
@@ -1511,12 +1492,6 @@ local function keepListener()
     if valid(lib) then
       try("RegisterDefaultListener", function() lib:RegisterDefaultListener(S.pc1, AUDIO.owner) end)
       S.lastListenerFix = now()
-      if ExecuteWithDelay then
-        if not S.audioRespawnDone then
-          S.audioRespawnDone = true
-          ExecuteWithDelay(1500, function() ExecuteInGameThread(function() pcall(S.respawnForAudio) end) end)
-        end
-      end
       if not AUDIO.logged then AUDIO.logged = true; log("звук: игра переключила слушателя на %s — вернул на %s", cname(o), cname(AUDIO.owner)) end
       if ExecuteWithDelay then
         ExecuteWithDelay(300, function() ExecuteInGameThread(function() pcall(refreshAmbience) end) end)
@@ -1623,7 +1598,6 @@ local function setCoop(on)
     S.enemy.listAt, S.enemy.killAt, S.enemy.bbAt, S.enemy.st, S.enemy.pos = -10000, -10000, {}, {}, {}
     if not acquire() then toast("Не нашёл двух героев — загрузите игру"); return end
     S.coop, S.split = true, false
-    S.audioRespawnDone = false
     S.lastBuddyLoc, S.camFrozenAt = nil, nil   -- место героя с прошлого уровня не годится
     -- запоминаем мир, в котором включились: иначе проверка смены уровня,
     -- не успевшая заметить загрузку, сразу же приостановит кооператив
