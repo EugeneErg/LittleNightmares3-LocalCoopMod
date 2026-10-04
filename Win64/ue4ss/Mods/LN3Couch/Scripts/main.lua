@@ -1,4 +1,4 @@
--- LN3Couch v9.11.15 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.11.16 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -2335,6 +2335,28 @@ S.p1UnhiddenItems = function()
   end
   return out
 end
+-- Доводим «убрать вещь» до конца. При нажатии кнопки игроком игра после
+-- выключения фонарика делает ещё: SetToolHidden(true) у вещи,
+-- SetWeaponVisibility(false, false) у героя, ClearAnimationOverride у вещи
+-- (снимает с героя позу «фонарик в руке»). При вызове ReleaseItem из мода
+-- эти шаги не происходят, и фонарик висит «полуубранным» сколько угодно.
+S.finishStash = function(item, hero, attempt)
+  local res = {}
+  local function step(obj, fn, args)
+    local ok, e = S.itemCall(obj, fn, args)
+    res[#res + 1] = fn .. "=" .. (ok and "ок" or tostring(e))
+  end
+  step(item, "SetToolHidden", { true })
+  if valid(hero) then step(hero, "SetWeaponVisibility", { false, false }) end
+  step(item, "ClearAnimationOverride")
+  -- запасной вариант: если и после этого вещь видна — прячем сам предмет
+  if attempt and attempt >= 2 then
+    local ok = pcall(function() item:SetActorHiddenInGame(true) end)
+    res[#res + 1] = "SetActorHiddenInGame=" .. (ok and "ок" or "ошибка")
+  end
+  local hid = "?"; pcall(function() hid = tostring(item.bHidden) end)
+  trail(string.format("подсадка: довожу уборку %s (%d): %s → скрыта=%s", cname(item), attempt or 0, table.concat(res, ", "), hid))
+end
 S.boostPendingTick = function()
   local pb = S.pendingBoost; if not pb then return end
   -- ждём, пока вещь не только «убрана», но и спрятана игрой на пояс
@@ -2343,10 +2365,7 @@ S.boostPendingTick = function()
   -- при нажатии кнопки игроком) — повторяем, пока не спрячется
   if S.p1HeldItem() == nil and #unhidden > 0 and (pb.releases or 0) < 3 and S.frames - (pb.lastRelease or pb.at) > 30 then
     pb.releases = (pb.releases or 0) + 1; pb.lastRelease = S.frames
-    -- игра прячет вещь, когда заканчивает её «использование» (так делает
-    -- кнопка фонарика игрока: UseItem(false, true))
-    local ok, e = S.itemCall(unhidden[1], "UseItem", { false, true })
-    trail(string.format("подсадка: вещь ещё не спрятана — заканчиваю её использование (%d, %s)", pb.releases, ok and "ок" or tostring(e)))
+    S.finishStash(unhidden[1], pb.hero or S.p1, pb.releases)
   end
   local stashed = S.p1HeldItem() == nil and #unhidden == 0
   if stashed and not pb.stashedAt then pb.stashedAt = S.frames end
@@ -4454,4 +4473,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.11.15 загружен. F9 — меню кооператива")
+log("v9.11.16 загружен. F9 — меню кооператива")
