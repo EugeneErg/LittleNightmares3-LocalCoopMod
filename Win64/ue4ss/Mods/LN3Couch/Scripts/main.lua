@@ -1,4 +1,4 @@
--- LN3Couch v9.11.1 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.11.2 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -1676,6 +1676,7 @@ local function setCoop(on)
     if not acquire() then toast("Не нашёл двух героев — загрузите игру"); return end
     S.coop, S.split = true, false
     S.audioRespawnDone = false
+    pcall(function() if valid(S.ai) and valid(S.buddy) then S.ai.mCurrentCharacter = S.buddy end end)
     S.lastBuddyLoc, S.camFrozenAt = nil, nil   -- место героя с прошлого уровня не годится
     -- запоминаем мир, в котором включились: иначе проверка смены уровня,
     -- не успевшая заметить загрузку, сразу же приостановит кооператив
@@ -2178,6 +2179,16 @@ S.boostEnd = function(reason)
       S.cam1PawnHack, S.cam1PawnLost = false, nil
     end
     safePossess(b.owner, b.hero, "подсадка: герой → своему игроку")
+    -- ИИ-контроллер снова «помнит» напарника, а не героя игрока 1. Иначе игра
+    -- считает героя игрока 1 напарником ИИ и через пару секунд обращается к
+    -- ИИ без героя — игра падала после подсадки, которую делал игрок 1.
+    pcall(function()
+      local want = S.buddy   -- напарник ИИ — всегда герой игрока 2
+      if S.ai.mCurrentCharacter ~= want then
+        S.ai.mCurrentCharacter = want
+        trail("после подсадки: ИИ снова «помнит» " .. heroName(want))
+      end
+    end)
     if b.hero == S.p1 then
       pcall(function() trail(string.format("после подсадки: Low у %s, герой ИК1=%s", clsName(S.p1.Controller), clsName(S.pc1.Pawn))) end)
     end
@@ -2461,13 +2472,16 @@ S.boostStart = function(hero, owner, spot)
     return false
   end
   -- ИИ-контроллер запоминает «своего» героя; после смены героя обновляем
+  -- (а после подсадки возвращаем как было — см. S.boostEnd)
+  local prevChar = nil
+  pcall(function() prevChar = S.ai.mCurrentCharacter end)
   pcall(function() S.ai.mCurrentCharacter = hero end)
   if hero == S.buddy then S.real = false
   else
     -- камера игрока 1 замирает на месте на время подсадки
     pcall(S.applyCam1Freeze)
   end
-  S.boost = { hero = hero, owner = owner, spot = spot, startFrame = S.frames }
+  S.boost = { hero = hero, owner = owner, spot = spot, startFrame = S.frames, prevChar = prevChar }
   pcall(S.boostPassThrough, true)
   local ok, action = try("PlaypalBoost", function() return interactCmds():PlaypalBoost(hero, spot) end)
   if ok and valid(action) then
@@ -4103,4 +4117,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.11.1 загружен. F9 — меню кооператива")
+log("v9.11.2 загружен. F9 — меню кооператива")
