@@ -1,4 +1,4 @@
--- LN3Couch v9.6 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.7 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -1049,6 +1049,7 @@ S.EN = {
   ["Геймпад игрока 2 не отвечает — проверьте подключение"] = "Player 2's gamepad is not responding — check the connection",
   ["Не нашёл двух героев — загрузите игру"] = "Couldn't find both heroes — load a game first",
   ["Игрок 2 подключён"] = "Player 2 joined",
+  ["Игра будет вдвоём"] = "The game will be two-player", ["Игра будет на одного"] = "The game will be single-player",
   ["Напарником снова управляет ИИ"] = "The AI controls the companion again",
   ["Настройки сброшены"] = "Settings reset",
   ["Назначено"] = "Assigned",
@@ -1478,6 +1479,7 @@ suspendCoop = function(reason)
   S.coop, S.split, S.resumeCoop, S.cmd, S.throwCheck, S.detect, S.drag, S.cbox = false, false, true, nil, nil, nil, nil, nil
   pcall(function() gms().bUseSplitscreen = false end)
 end
+if CFG.coop_enabled then S.resumeCoop = true end
 local function resumeTick()
   if not S.resumeCoop or S.coop or S.frames % 60 ~= 0 then return end
   local pc = findPC1()
@@ -1486,7 +1488,23 @@ local function resumeTick()
   S.resumeCoop = false
   log("кооператив возобновлён")
   setCoop(true)
+  if not S.coop and CFG.coop_enabled then S.resumeCoop = true end
 end
+-- Выбор «на одного / на двоих» запоминается между запусками игры. Включить
+-- можно и в главном меню: кооператив начнётся сам, как только появятся герои.
+S.userSetCoop = function(on)
+  CFG.coop_enabled = on and true or false
+  saveSettings()
+  if on then
+    local pc = findPC1()
+    if valid(pc) and isHero(pc.Pawn) and findBuddy(pc.Pawn) then setCoop(true)
+    else S.resumeCoop = true; toast("Игра будет вдвоём") end
+  else
+    S.resumeCoop = false
+    if S.coop then setCoop(false) else toast("Игра будет на одного") end
+  end
+end
+S.coopWanted = function() return S.coop or (CFG.coop_enabled and true or false) end
 
 -- Предметы. ИИ-напарник поднимает предметы не «кнопкой», а командой «подними
 -- вот этот предмет». Поэтому по кнопке игрока 2 сами находим ближайший предмет
@@ -3049,8 +3067,8 @@ local function mainMenu()
   return {
     title = "КООПЕРАТИВ — LN3Couch",
     items = {
-      { label = function() return "Второй игрок" end, value = function() return S.coop and "ВКЛЮЧЁН" or "выключен" end,
-        act = function() setCoop(not S.coop) end, left = function() setCoop(not S.coop) end, right = function() setCoop(not S.coop) end },
+      { label = function() return "Второй игрок" end, value = function() return S.coopWanted() and "ВКЛЮЧЁН" or "выключен" end,
+        act = function() S.userSetCoop(not S.coopWanted()) end, left = function() S.userSetCoop(not S.coopWanted()) end, right = function() S.userSetCoop(not S.coopWanted()) end },
       { label = function() return "Управление игрока 2" end, value = function() return optTitle(DEVICES, CFG.device) end,
         left = function() CFG.device = optCycle(DEVICES, CFG.device, -1); changed(); applyGamepadRouting() end,
         right = function() CFG.device = optCycle(DEVICES, CFG.device, 1); changed(); applyGamepadRouting() end },
@@ -3319,7 +3337,7 @@ local showPage -- вперёд
 
 local function coopItems()
   return {
-    { function() return "Второй игрок: " .. yesno(S.coop) end, function() setCoop(not S.coop) end },
+    { function() return "Второй игрок: " .. yesno(S.coopWanted()) end, function() S.userSetCoop(not S.coopWanted()) end },
     { function() return "Управление игрока 2: " .. optTitle(DEVICES, CFG.device) end,
       function() CFG.device = optCycle(DEVICES, CFG.device, 1); saveSettings(); PM.rebuildKeys = true; applyGamepadRouting() end },
     { function() return "Геймпад №1 у: " .. (CFG.gamepad_goes_to_player2 and "игрока 2" or "игрока 1") end,
@@ -3439,6 +3457,66 @@ local function injectPause(w)
   pcall(S.dumpStrings)
 end
 
+-- Разовый разбор экранов игры (главное меню, настройки, пауза): какие там
+-- окна, кнопки и надписи на текущем языке. Нужен, чтобы встроить пункт
+-- «Кооператив» в главное меню и брать слова для меню мода у самой игры.
+-- Пишется в ue4ss/Mods/LN3Couch/ui_dump.txt; выключается ui_dump = false.
+S.uiSeen = {}
+S.uiText = function(w)
+  local t = nil
+  for _, f in ipairs({ "GetText" }) do
+    pcall(function() local r = w[f](w); if r then t = type(r) == "string" and r or r:ToString() end end)
+  end
+  if not t then
+    for _, prop in ipairs({ "ButtonText", "LocalisedString", "Text" }) do
+      pcall(function() local r = w[prop]; if r and not t then t = type(r) == "string" and r or r:ToString() end end)
+      if t then break end
+    end
+  end
+  if t and t ~= "" then return (t:gsub("\n", "\\n")) end
+end
+S.uiTree = function(f, w, depth)
+  if depth > 14 or not valid(w) then return end
+  local cls = ""; pcall(function() cls = w:GetClass():GetFName():ToString() end)
+  local line = string.rep("  ", depth) .. wfname(w) .. " [" .. cls .. "]"
+  local t = S.uiText(w); if t then line = line .. " = «" .. t .. "»" end
+  local vis = nil; pcall(function() vis = w:GetVisibility() end)
+  if vis and vis ~= 0 and vis ~= 3 and vis ~= 4 then line = line .. " (скрыт)" end
+  f:write(line, "\n")
+  -- вложенное окно со своим деревом
+  local okt, root = pcall(function() return w.WidgetTree.RootWidget end)
+  if okt and valid(root) and depth > 0 then S.uiTree(f, root, depth + 1); return end
+  for _, c in ipairs(children(w)) do S.uiTree(f, c, depth + 1) end
+  local okc, content = pcall(function() return w:GetContent() end)
+  if okc and valid(content) and #children(w) == 0 then S.uiTree(f, content, depth + 1) end
+end
+S.uiDumpTick = function()
+  if CFG.ui_dump == false or S.frames % 60 ~= 30 then return end
+  local list = FindAllOf("UserWidget") or {}
+  for _, w in ipairs(list) do
+    local okv, vis = pcall(function() return w:IsVisible() and w:IsInViewport() end)
+    if valid(w) and okv and vis then
+      local cls = ""; pcall(function() cls = w:GetClass():GetFName():ToString() end)
+      local n = S.uiSeen[cls] or 0
+      if n < 3 then
+        -- одно и то же окно пишем заново, только если поменялись надписи
+        local sig = {}
+        local function collect(x, d) if d > 14 or not valid(x) then return end local t = S.uiText(x); if t then sig[#sig + 1] = t end for _, c in ipairs(children(x)) do collect(c, d + 1) end end
+        pcall(function() collect(w.WidgetTree.RootWidget, 0) end)
+        local key = cls .. "|" .. table.concat(sig, "|")
+        if not S.uiSeen[key] then
+          S.uiSeen[key] = true; S.uiSeen[cls] = n + 1
+          local f = io.open("ue4ss/Mods/LN3Couch/ui_dump.txt", "a")
+          if f then
+            f:write("\n=== ", cls, "   ", wid(w), "   язык: ", tostring(S.lang or "?"), "\n")
+            pcall(function() S.uiTree(f, w.WidgetTree.RootWidget, 0) end)
+            f:close()
+          end
+        end
+      end
+    end
+  end
+end
 local pauseOpenCache, pauseOpenAt = false, -100
 function lastPauseOpen()
   if S.frames - pauseOpenAt >= 15 then
@@ -3547,6 +3625,7 @@ local function Tick()
   if S.detectPending and not lastPauseOpen() then S.detectPending = false; try("startDetect", startDetect) end
   if S.detect then try("detectTick", detectTick) end
   try("pauseTick", pauseTick)
+  try("uiDump", S.uiDumpTick)
   if not S.menuOpen then try("captureTick", captureTick) end
   if S.menuOpen then
     if not valid(S.pc1) then S.pc1 = findPC1() end
@@ -3715,4 +3794,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.6 загружен. F9 — меню кооператива")
+log("v9.7 загружен. F9 — меню кооператива")
