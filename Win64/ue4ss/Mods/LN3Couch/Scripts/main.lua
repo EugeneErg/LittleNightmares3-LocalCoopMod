@@ -1,4 +1,4 @@
--- LN3Couch v9.9.2 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.9.3 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -43,9 +43,14 @@ local function merge(dst, src) for k, v in pairs(src) do if type(v) == "table" a
 local function serialize(v, ind)
   ind = ind or ""
   if type(v) == "table" then
-    local keys = {}; for k in pairs(v) do keys[#keys + 1] = k end; table.sort(keys)
+    local keys = {}; for k in pairs(v) do keys[#keys + 1] = k end
+    table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
     local out = { "{\n" }
-    for _, k in ipairs(keys) do out[#out + 1] = string.format("%s  %s = %s,\n", ind, k, serialize(v[k], ind .. "  ")) end
+    for _, k in ipairs(keys) do
+      -- ключ-слово пишем как есть, всё остальное — в скобках и кавычках
+      local ks = (type(k) == "string" and k:match("^[%a_][%w_]*$")) and k or ("[" .. serialize(k) .. "]")
+      out[#out + 1] = string.format("%s  %s = %s,\n", ind, ks, serialize(v[k], ind .. "  "))
+    end
     out[#out + 1] = ind .. "}"; return table.concat(out)
   elseif type(v) == "string" then return string.format("%q", v) else return tostring(v) end
 end
@@ -58,9 +63,10 @@ local function loadSettings()
   local f = io.open(SAVE_PATH, "r")
   if f then
     local src = f:read("*a"); f:close()
-    local fn = load(src, "settings", "t", {})
+    local fn, perr = load(src, "settings", "t", {})
     local ok2, saved = pcall(fn or function() end)
-    if ok2 and type(saved) == "table" then merge(CFG, saved); log("сохранённые настройки загружены") end
+    if ok2 and type(saved) == "table" then merge(CFG, saved); log("сохранённые настройки загружены")
+    else log("settings.lua не читается (%s) — взяты настройки по умолчанию", tostring(perr or saved)) end
   end
 end
 
@@ -3937,4 +3943,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.9.2 загружен. F9 — меню кооператива")
+log("v9.9.3 загружен. F9 — меню кооператива")
