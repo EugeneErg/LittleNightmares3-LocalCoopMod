@@ -26,13 +26,17 @@ Little Nightmares III only offers online co-op. LN3Couch lets a second person on
 
 ### Camera and screen
 - **Shared screen that frames both players.** When you are together, the game's own camera takes both heroes into account, not just Player 1.
-- **Split screen when you need it.** When you are in different rooms, or Player 2 leaves Player 1's view, the screen splits top/bottom (or left/right). Walk back together and it merges again.
+- **Split screen when you need it.** When you are in different rooms, or Player 2 leaves Player 1's view, the screen splits. Walk back together and it merges again.
+- **Smart split direction.** The split follows where the heroes are, like in *Split Fiction*: side by side splits left/right, one above the other splits top/bottom, and each player gets the half on their own side. Prefer a fixed layout? Switch it to always top/bottom.
+- **No black bars.** Each half of the split screen is filled edge to edge.
 - **Room-aware camera for Player 2.** On the split screen, Player 2's camera follows the same per-room rules as the game's camera: set angles, room bounds, smooth transitions.
 - **Look around** with the right stick, each player in their own view.
 - **Deaths look right.** When someone is caught, both views fade out together and come back at the checkpoint.
 
 ### Convenience
-- **In-game menu.** A **Co-op** item in the pause menu (or **F9**). Turn Player 2 on or off at any time, settings are saved.
+- **Set up before you play.** A **Co-op** item in the main menu and in the pause menu (or **F9**). Turn Player 2 on or off at any time.
+- **Just press Continue.** The mod remembers whether you play alone or together. Next time, load your save and Player 2 joins on their own.
+- **Speaks your language.** The mod's menu follows the game's language. Where the game has its own word for something (Back, Reset), the mod uses it.
 - **Automatic gamepad detection.** Press A on Player 2's controller and the mod finds it.
 - **Keeps going through checkpoints, deaths and level changes.** Co-op pauses while loading and resumes on its own.
 
@@ -61,23 +65,21 @@ SMG031MP\Binaries\Win64\
 
 ## How to play
 
-1. Start or load a single-player game.
-2. Open the pause menu and select **Co-op**, or press **F9**.
-3. Turn on Player 2. The first time, run gamepad detection and press **A** on Player 2's controller.
-4. Play. Player 2 uses the game's standard controller layout.
+1. In the main menu, open **Co-op** and turn on Player 2. You can also do it later from the pause menu or with **F9**.
+2. Start or load a single-player game. Player 2 joins as soon as both heroes are on screen.
+3. The first time, run gamepad detection in the Co-op menu and press **A** on Player 2's controller.
+4. Play. Player 2 uses the game's standard controller layout. Next time just load your save: the mod remembers that you play together.
 
 ## Settings
 
-Everything is in the in-game **Co-op** menu:
+Everything is in the **Co-op** menu (main menu, pause menu or **F9**):
 
 | Option | Values |
 |---|---|
-| Player 2 | on / off |
+| Player 2 | on / off (remembered between sessions) |
 | Player 2 controls | gamepad / right side of the keyboard |
 | Gamepad #1 belongs to | Player 1 / Player 2 |
-| Screen | Auto (split when needed), By distance, Always split, Always shared |
-| Layout | Top/bottom, Left/right |
-| Split distance | for the "By distance" mode |
+| Split | Auto (by where the heroes are) / Always top/bottom |
 | Player 2 buttons | remap Player 2's controls |
 
 Settings are stored in `ue4ss\Mods\LN3Couch\settings.lua`.
@@ -95,7 +97,7 @@ After:   Player 1 ─ PlayerController 1 ─ hero 1
 ```
 
 - A second local player is created inside the running game and takes over the companion hero. From then on the game's own input, abilities and interactions work for Player 2.
-- Split screen uses the engine's native two-player viewports.
+- Split screen uses the engine's native two-player viewports. To put each player on their own side, the mod orders the two local players so the engine draws them in the right halves. Gamepads stay with their players.
 - On the shared screen, Player 2's hero is added to the game camera as a point of interest, so the camera's own logic frames both players.
 - Player 2's split-screen camera reproduces the game's room cameras: the hero's position in the room maps to the camera's position, with the designer-set angles and limits.
 - For boosts the mod briefly hands the giving hero to the game's AI, which knows how to perform the boost, and gives it back as soon as the boost ends.
@@ -108,13 +110,17 @@ Tested on the Steam version of Little Nightmares III, October 2026. A game updat
 ## Troubleshooting
 
 - **The game does not start or the UE4SS window does not appear.** Check that `dwmapi.dll` and `ue4ss` are directly inside `Win64`, not in `Win64\Win64`.
-- **No Co-op item in the pause menu.** You need to be in a loaded game, not the main menu. F9 also works.
+- **No Co-op item in the menu.** It appears in the main menu and the pause menu a moment after they open. F9 also works.
 - **The wrong gamepad controls Player 2.** In the Co-op menu, run gamepad detection and press A on Player 2's controller, or switch "Gamepad #1 belongs to".
 - **Something broke.** Please attach `ue4ss\UE4SS.log`, `ue4ss\Mods\LN3Couch\trail.txt` and, after a crash, the newest folder from `%LOCALAPPDATA%\LittleNightmaresIII\Saved\Crashes`.
 
 ## Reporting bugs
 
 [Open an issue](https://github.com/EugeneErg/LittleNightmares3-LocalCoopMod/issues/new/choose) and include what you did, what happened and the log files listed above. Videos help a lot.
+
+## Links
+
+- [LN3Couch on Nexus Mods](https://www.nexusmods.com/littlenightmares3/mods/24)
 
 ## Credits
 
