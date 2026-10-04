@@ -1,4 +1,4 @@
--- LN3Couch v9.9.8 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.9.9 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -1506,6 +1506,27 @@ S.repossessP1 = function()
   trail(string.format("звук: игрок 1 заново вселён в героя — отпустил=%s, взял=%s, герой на месте=%s", tostring(okU), tostring(okP), tostring(back)))
   if not back then pcall(function() S.pc1:Possess(S.p1) end) end
 end
+-- Попытка 3: «возрождение без смерти». После смерти звук возвращается, когда
+-- игра возрождает героев. У игры есть отдельная функция возрождения —
+-- вызываем её один раз сразу после подключения второго игрока.
+S.respawnForAudio = function()
+  if CFG.audio_respawn == false or not (S.coop and valid(S.p1)) then return end
+  local dc = nil
+  pcall(function() dc = S.p1:GetComponentByClass(StaticFindObject("/Script/Kosmos.KosmosCharacterDeathComponent")) end)
+  if not valid(dc) then trail("звук: у героя нет компонента смерти"); return end
+  -- какие параметры у функции (для разбора)
+  local params = {}
+  pcall(function()
+    local f = StaticFindObject("/Script/Kosmos.KosmosCharacterDeathComponent:RespawnPlayers")
+    f:ForEachProperty(function(pr)
+      local cn = ""; pcall(function() cn = pr:GetClass():GetFName():ToString() end)
+      params[#params + 1] = pr:GetFName():ToString() .. ":" .. cn
+    end)
+  end)
+  local ok, e = pcall(function() dc:RespawnPlayers() end)
+  trail(string.format("звук: вызвал возрождение героев (параметры: %s) — %s", table.concat(params, ", "),
+    ok and "без ошибок" or ("ошибка: " .. tostring(e))))
+end
 -- Для запасного варианта: какие функции смерти/возрождения есть у игры.
 S.dumpDeathFns = function()
   if S.deathFnsDumped then return end
@@ -1548,7 +1569,7 @@ local function keepListener()
         ExecuteWithDelay(200, function() ExecuteInGameThread(function() pcall(S.rebindListeners, "после возврата «ушей»") end) end)
         if not S.repossessDone then
           S.repossessDone = true
-          ExecuteWithDelay(1500, function() ExecuteInGameThread(function() pcall(S.repossessP1); pcall(S.dumpDeathFns) end) end)
+          ExecuteWithDelay(1500, function() ExecuteInGameThread(function() pcall(S.respawnForAudio) end) end)
         end
       else pcall(S.rebindListeners, "после возврата «ушей»") end
       if not AUDIO.logged then AUDIO.logged = true; log("звук: игра переключила слушателя на %s — вернул на %s", cname(o), cname(AUDIO.owner)) end
@@ -4074,4 +4095,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.9.8 загружен. F9 — меню кооператива")
+log("v9.9.9 загружен. F9 — меню кооператива")
