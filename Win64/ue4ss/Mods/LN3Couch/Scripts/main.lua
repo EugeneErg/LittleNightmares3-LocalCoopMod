@@ -1,4 +1,4 @@
--- LN3Couch v9.9 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.9.1 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -965,6 +965,8 @@ local function updateSplit()
   pcall(S.applySplitAspect, want)
   if not want then S.splitLR, S.p2First = nil, false end
   log(want and "экран разделён" or "экран общий")
+  -- для разбора пропажи звука: состояние звука сразу и через 2 и 6 с
+  S.audioProbe = { S.frames + 1, S.frames + 120, S.frames + 360 }
 end
 
 ------------------------------------------------------------------ кооператив вкл/выкл
@@ -1380,6 +1382,27 @@ S.ambienceTick = function()
     end
   end
 
+end
+S.audioProbeTick = function()
+  local due = false
+  for i, f in ipairs(S.audioProbe) do if f and S.frames >= f then S.audioProbe[i] = false; due = true end end
+  if not due then return end
+  local st = S.ambienceState() or {}
+  local o = listenerOwner()
+  local aks = {}
+  pcall(function()
+    for _, c in ipairs(FindAllOf("AkComponent") or {}) do
+      local ok, ow = pcall(function() return c:GetOwner() end)
+      if ok and valid(ow) then
+        local cn = cname(ow)
+        if cn:find("Camera") or cn:find("Controller") then aks[#aks + 1] = cn .. (ow == S.pc2 or (valid(S.pc2) and ow == S.pc2.PlayerCameraManager) and "(игрок 2)" or "") end
+      end
+    end
+  end)
+  local first = "?"
+  pcall(function() local arr = S.localPlayers(); first = (valid(arr[1]) and valid(S.lp2) and arr[1]:GetAddress() == S.lp2:GetAddress()) and "игрок 2" or "игрок 1" end)
+  trail(string.format("звук (%s): уши=%s, фон зоны=%s, общий фон=%s, первым в списке=%s, Ak у камер/контроллеров: %s",
+    S.split and "разделён" or "общий", cname(o), tostring(st.v), tostring(st.g), first, table.concat(aks, ", ")))
 end
 local function keepListener()
   if not valid(AUDIO.owner) then return end
@@ -3818,6 +3841,7 @@ local function Tick()
   -- снимаем — кроме сценок, которые нельзя прерывать.
   if S.frames % 15 == 0 then keepListener() end
   if S.frames % 120 == 60 then pcall(S.ambienceTick) end
+  if S.audioProbe and S.coop then pcall(S.audioProbeTick) end
   if S.frames % 120 == 30 then pcall(S.keepAnimating) end
 
   if S.frames % 120 == 0 then pcall(dedupeRegistry, "проверка") end
@@ -3903,4 +3927,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.9 загружен. F9 — меню кооператива")
+log("v9.9.1 загружен. F9 — меню кооператива")
