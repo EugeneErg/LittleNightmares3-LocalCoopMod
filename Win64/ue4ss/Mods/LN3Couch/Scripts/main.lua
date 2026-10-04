@@ -1,4 +1,4 @@
--- LN3Couch v9.11 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.11.1 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -2163,7 +2163,9 @@ end
 S.boostEnd = function(reason)
   local b = S.boost; if not b then return end
   S.boost = nil
-  S.boostCooldown = S.frames + 45   -- не переключать героя туда-обратно слишком часто
+  -- не переключать героя туда-обратно слишком часто; после совсем короткой
+  -- (сорвавшейся) подсадки ждём дольше
+  S.boostCooldown = S.frames + ((b.startFrame and S.frames - b.startFrame < 90) and 180 or 45)
   pcall(S.boostPassThrough, false)
   try("boost stop", function() S.ai:StopAllAICommands() end)
   try("ai tick off", function() S.ai:SetActorTickEnabled(false) end)
@@ -2487,6 +2489,9 @@ S.rbEdges = function()
   local r1, r2 = held(S.pc1), held(p2Source())
   local e1, e2 = r1 and not S.prevRB1, r2 and not S.prevRB2
   S.prevRB1, S.prevRB2 = r1, r2
+  -- сколько кадров курок держат (для начала подсадки)
+  S.rbHeld1 = r1 and (S.rbHeld1 or 0) + 1 or 0
+  S.rbHeld2 = r2 and (S.rbHeld2 or 0) + 1 or 0
   return e1, e2
 end
 S.boostTick = function(e1, e2)
@@ -2570,10 +2575,15 @@ S.boostInput = function()
   end
   if S.boost then S.boostTick(e1, e2) return end
   if S.boostCooldown and S.frames < S.boostCooldown then return end
-  if e1 then
+  -- подсадку начинаем, когда курок держат ~0,4 с, а не от любого нажатия:
+  -- короткие нажатия у места подсадки (схватить что-то, в погоне) раньше
+  -- то начинали, то сразу отменяли подсадку, и каждый раз героя забирали у
+  -- игрока и возвращали — в погоне это роняло игру
+  local HOLD = CFG.boost_hold_frames or 24
+  if S.rbHeld1 == HOLD then
     local spot = S.nearestBoostTo(S.p1)
     if spot then S.boostStart(S.p1, S.pc1, spot) end
-  elseif e2 then
+  elseif S.rbHeld2 == HOLD then
     local spot = S.nearestBoostTo(S.buddy)
     if spot then S.boostStart(S.buddy, S.pc2, spot) end
   end
@@ -4093,4 +4103,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.11 загружен. F9 — меню кооператива")
+log("v9.11.1 загружен. F9 — меню кооператива")
