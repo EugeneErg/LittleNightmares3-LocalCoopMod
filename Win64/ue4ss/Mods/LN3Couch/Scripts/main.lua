@@ -1,4 +1,4 @@
--- LN3Couch v9.9.4 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.9.5 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -1332,6 +1332,59 @@ for _, fn in ipairs({ "PostGlobalAmbience", "SetGlobalAudioSettings", "PostGloba
     end)
   end)
 end
+-- Разбор пропажи звука: записываем все вызовы звуковой системы игры и Wwise
+-- (кроме опросов Get/Is/Has) — чтобы увидеть, что игра делает при смерти,
+-- когда звук возвращается. Не больше 3 записей на функцию за 10 с.
+S.audioTraceArg = function(v)
+  if type(v) == "string" or type(v) == "number" or type(v) == "boolean" then return tostring(v) end
+  if type(v) ~= "userdata" then return nil end
+  local okt, t = pcall(function() return v:type() end)
+  if okt and (t == "FName" or t == "FString" or t == "FText") then
+    local oks, str = pcall(function() return v:ToString() end)
+    if oks then return str end
+  end
+  return nil
+end
+S.installAudioTrace = function()
+  if S.audioTraceOn or CFG.audio_trace == false then return end
+  S.audioTraceOn = true
+  local skip = { PostGlobalAmbience = 1, SetGlobalAudioSettings = 1, PostGlobalMusic = 1, PostMusicPlayback = 1,
+    StopGlobalMusic = 1, StartGlobalMusic = 1, RegisterDefaultListener = 1 }
+  local n = 0
+  for _, path in ipairs({ "/Script/Kosmos.KosmosAudioBlueprintLibrary", "/Script/AkAudio.AkGameplayStatics" }) do
+    local cls = StaticFindObject(path)
+    if valid(cls) then
+      local cn = path:match("%.([%w_]+)$")
+      pcall(function()
+        cls:ForEachFunction(function(f)
+          pcall(function()
+            local fname = f:GetFName():ToString()
+            if skip[fname] or fname:find("^Get") or fname:find("^Is") or fname:find("^Has") then return end
+            local full = f:GetFullName():gsub("^Function ", "")
+            RegisterHook(full, function(ctx, ...)
+              S.audioTraceCnt = S.audioTraceCnt or {}
+              local c = S.audioTraceCnt[fname]
+              local t = now()
+              if not c or t - c.t > 10 then c = { t = t, n = 0 }; S.audioTraceCnt[fname] = c end
+              c.n = c.n + 1
+              if c.n > 3 then return end
+              local parts = {}
+              for _, prm in ipairs({ ... }) do
+                local okg, v = pcall(function() return prm:get() end)
+                local d = okg and S.audioTraceArg(v) or nil
+                if d and #parts < 4 then parts[#parts + 1] = d end
+              end
+              trail("звук игры: " .. cn .. "." .. fname .. (#parts > 0 and (" (" .. table.concat(parts, ", ") .. ")") or ""))
+            end)
+            n = n + 1
+          end)
+        end)
+      end)
+    end
+  end
+  log("запись звуковых вызовов: %d функций", n)
+end
+pcall(S.installAudioTrace)
 S.replayGlobalAudio = function()
   local lib = StaticFindObject("/Script/Kosmos.Default__KosmosAudioBlueprintLibrary")
   if not valid(lib) then return end
@@ -1582,11 +1635,10 @@ local function resumeTick()
   if not S.resumeCoop or S.coop or S.frames % 60 ~= 0 then return end
   local pc = findPC1()
   if not (valid(pc) and isHero(pc.Pawn)) or not findBuddy(pc.Pawn) then S.resumeReady = 0; return end
-  -- не в первую же секунду уровня: игра в это время включает звук уровня
-  -- («уши», фон, музыку), и второй игрок, созданный в этот момент, сбивает
-  -- звук до следующей смерти. Ждём, пока оба героя стабильно в игре.
+  -- можно задать задержку (resume_delay_s, в секундах); по умолчанию сразу,
+  -- чтобы напарником не успел побегать ИИ
   S.resumeReady = (S.resumeReady or 0) + 1
-  if S.resumeReady < (CFG.resume_delay_s or 5) then return end
+  if S.resumeReady < (CFG.resume_delay_s or 1) then return end
   S.resumeReady = 0
   S.resumeCoop = false
   log("кооператив возобновлён")
@@ -3948,4 +4000,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.9.4 загружен. F9 — меню кооператива")
+log("v9.9.5 загружен. F9 — меню кооператива")
