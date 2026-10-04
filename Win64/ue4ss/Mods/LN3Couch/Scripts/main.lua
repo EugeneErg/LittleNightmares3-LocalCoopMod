@@ -1,4 +1,4 @@
--- LN3Couch v9.10.12 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.11 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -500,7 +500,7 @@ local function pickRoomCam(p)
   local best, bestPri, bestSize
   for _, a in ipairs(RC.list) do
     local ok, res = pcall(function()
-      if not (valid(a) and (a.mEnabled or (S.dhMuted and S.dhMuted[a:GetFullName()]))) then return nil end
+      if not (valid(a) and a.mEnabled) then return nil end
       local pv = a.mEditablePlayerVolume; if not valid(pv) then return nil end
       local c, yaw, e = boxInfo(pv)
       local lx, ly, lz = toLocal(c, yaw, p)
@@ -518,33 +518,6 @@ S.inRoomVol = function(a, p)
   local c, yaw, e = boxInfo(pv)
   local lx, ly, lz = toLocal(c, yaw, p)
   return math.abs(lx) <= e.X and math.abs(ly) <= e.Y and math.abs(lz) <= e.Z
-end
--- Комнатные камеры игры включаются, когда в их зону заходит любой игрок, а
--- показывает их камера игрока 1. В одиночной игре напарник — не игрок, а у
--- нас он игрок, поэтому, когда второй уходит в другую зону (к колесу), камера
--- игрока 1 переключается на камеру той зоны. Пока экран разделён, камеры
--- зон, где стоит только игрок 2, для игры выключаем (у второго своя камера,
--- она их по-прежнему видит), потом включаем обратно.
-S.dhMuted = S.dhMuted or {}
-S.muteP2Rooms = function()
-  local list = FindAllOf("DollhouseCameraActor") or {}
-  local p1l, p2l = S.p1:K2_GetActorLocation(), S.buddy:K2_GetActorLocation()
-  for _, a in ipairs(list) do
-    pcall(function()
-      if not valid(a) then return end
-      local key = a:GetFullName()
-      local muted = S.dhMuted[key]
-      local onlyP2 = S.split and S.inRoomVol(a, p2l) and not S.inRoomVol(a, p1l)
-      if onlyP2 and not muted and a.mEnabled then
-        a.mEnabled = false; S.dhMuted[key] = a
-        trail("камера 1: зона " .. a:GetFName():ToString() .. " только у игрока 2 — для камеры игрока 1 выключил")
-      elseif muted and not onlyP2 then
-        a.mEnabled = true; S.dhMuted[key] = nil
-      end
-    end)
-  end
-  -- зоны, которые пропали из списка (выгрузились), просто забываем
-  for k, a in pairs(S.dhMuted) do if not valid(a) then S.dhMuted[k] = nil end end
 end
 local function roomCamPose(a, p)
   local cc = a.mCameraComponent
@@ -1030,8 +1003,7 @@ local function updateSplit()
     end
   end
   VIS.hiddenFor, VIS.shownFor = 0, 0
-  -- Проверка: смена порядка игроков делает игрока 2 «главным» для игры
-  -- (камера игрока 1 на колесе уезжает к нему). Пока по умолчанию не меняем.
+  -- каждый игрок — на своей половине (выключается split_swap_sides = false)
   if want then pcall(S.decideSplitSides); if CFG.split_swap_sides ~= false then pcall(S.setPlayerOrder, S.p2First) end end
   setSplitVisible(want)
   pcall(S.applySplitAspect, want)
@@ -1582,39 +1554,6 @@ S.fadeInAudio = function(why)
     if valid(pc) then
       local ok, e, d = S.callGameFn(pc, "/Script/Kosmos.KosmosPlayerController:FadeInAudio", "FadeInAudio")
       trail(string.format("звук: вернул звук через контроллер игрока %d (%s) [%s] — %s", i, why or "", d, ok and "сделано" or ("ошибка: " .. tostring(e))))
-    end
-  end
-end
-S.killForAudio = function()
-  if CFG.audio_kill == false or not (S.coop and valid(S.p1)) then return end
-  local done = false
-  -- что есть у игры для убийства героя (для разбора)
-  local fns = {}
-  local klib = StaticFindObject("/Script/Kosmos.Default__KosmosBlueprintFunctionLibrary")
-  pcall(function()
-    StaticFindObject("/Script/Kosmos.KosmosBlueprintFunctionLibrary"):ForEachFunction(function(f)
-      local n = f:GetFName():ToString()
-      if n:find("Kill") then fns[#fns + 1] = n end
-    end)
-  end)
-  trail("звук: функции убийства в библиотеке игры: " .. table.concat(fns, ", "))
-  for _, n in ipairs({ "KillPlayer", "KillCharacter", "KillPlayerCharacter" }) do
-    if not done and valid(klib) then
-      for _, have in ipairs(fns) do
-        if have == n then
-          local ok, e, d = S.callGameFn(klib, "/Script/Kosmos.KosmosBlueprintFunctionLibrary:" .. n, n)
-          log("звук: смерть героя через %s (%s) — %s", n, d, ok and "сделано" or ("ошибка: " .. tostring(e)))
-          done = ok
-        end
-      end
-    end
-  end
-  if not done then
-    local dc = nil
-    pcall(function() dc = S.p1:GetComponentByClass(StaticFindObject("/Script/Kosmos.KosmosCharacterDeathComponent")) end)
-    if valid(dc) then
-      local ok, e, d = S.callGameFn(dc, "/Script/Kosmos.KosmosCharacterDeathComponent:Kill_Server", "Kill_Server")
-      log("звук: смерть героя через Kill_Server (%s) — %s", d, ok and "сделано" or ("ошибка: " .. tostring(e)))
     end
   end
 end
@@ -2681,223 +2620,8 @@ S.ensurePOI = function()
   pcall(function() if not valid(c.mCameraManager) then c.mCameraManager = S.pc1.PlayerCameraManager end end)
   return c
 end
--- На разделённом экране камера игрока 1 — только его. Игра (как в одиночной
--- игре) «подсвечивает» напарника, когда тот крутит колесо или тянет рычаг:
--- включает свою точку интереса возле него, и камера игрока 1 уезжает к
--- напарнику. Пока экран разделён, такие точки возле игрока 2 (и далеко от
--- игрока 1) выключаем; потом возвращаем как было.
-S.poiMuted = S.poiMuted or {}
-S.suppressPOIs = function()
-  local cls = StaticFindObject(S.POI_CLASS)
-  if not valid(cls) then return end
-  local p1l, p2l = S.p1:K2_GetActorLocation(), S.buddy:K2_GetActorLocation()
-  for _, c in ipairs(FindAllOf(cls:GetFName():ToString()) or {}) do
-    if valid(c) and c ~= S.poi then
-      local key = c:GetFullName()
-      local okw, w = pcall(function() return c.mWeight end)
-      local muted = S.poiMuted[key]
-      local near = false
-      pcall(function()
-        local o = c:GetOwner()
-        local ol = c:K2_GetComponentLocation()
-        near = o == S.buddy or (dist(ol, p2l) < 400 and dist(ol, p1l) > 800)
-      end)
-      if S.split and near then
-        if not muted and okw and w and w > 0 then
-          S.poiMuted[key] = { c = c, w = w }
-          pcall(function() c.mWeight = 0 end)
-          local on = "?"; pcall(function() on = c:GetOwner():GetFName():ToString() end)
-          trail(string.format("камера 1: выключил точку интереса игры у второго игрока (%s, вес %.2f)", on, w))
-        elseif muted and okw and w and w > 0 then
-          muted.w = w; pcall(function() c.mWeight = 0 end)   -- игра снова включила — держим выключенной
-        end
-      elseif muted then
-        pcall(function() c.mWeight = muted.w end)
-        S.poiMuted[key] = nil
-      end
-    end
-  end
-end
--- Для разбора «камера игрока 1 уезжает к колесу»: что сейчас влияет на неё
--- Разовый разбор: какие поля у камеры игрока 1 и у комнатной камеры, и
--- какие из них указывают на героев (кого камера считает целью).
-S.dumpProps = function(obj, label)
-  local out = {}
-  local cls = obj:GetClass()
-  local depth = 0
-  while valid(cls) and depth < 6 do
-    local cn = cls:GetFName():ToString()
-    if cn == "Actor" or cn == "Object" then break end
-    pcall(function()
-      cls:ForEachProperty(function(pr)
-        local n = pr:GetFName():ToString()
-        local pt = ""; pcall(function() pt = pr:GetClass():GetFName():ToString() end)
-        local v = nil
-        pcall(function()
-          local x = obj[n]
-          if pt == "ObjectProperty" or pt == "WeakObjectProperty" or pt == "SoftObjectProperty" then v = clsName(x)
-          elseif pt == "ArrayProperty" then
-            local items = {}
-            pcall(function() x:ForEach(function(_, el) if #items < 4 then local e = el:get(); items[#items + 1] = (type(e) == "userdata" and clsName(e)) or tostring(e) end end) end)
-            local okn, nn = pcall(function() return x:GetArrayNum() end)
-            v = "[" .. tostring(okn and nn or "?") .. ": " .. table.concat(items, ",") .. "]"
-          elseif pt == "BoolProperty" or pt:find("Int") or pt == "FloatProperty" or pt == "ByteProperty" or pt == "EnumProperty" or pt == "NameProperty" then
-            v = type(x) == "userdata" and (select(2, pcall(function() return x:ToString() end))) or tostring(x)
-          end
-        end)
-        if v ~= nil then out[#out + 1] = n .. "=" .. tostring(v) end
-      end)
-    end)
-    local ok, sup = pcall(function() return cls:GetSuperStruct() end)
-    cls = ok and sup or nil; depth = depth + 1
-  end
-  trail("поля " .. label .. ": " .. table.concat(out, "; "))
-end
--- Разовый разбор звука: какие функции про «уши»/звук есть у контроллера,
--- камеры и звукового менеджера игры (ищем, чем игра сама ставит «уши» при
--- возрождении).
-S.dumpAudioFns = function()
-  if S.audioFnsDumped then return end
-  S.audioFnsDumped = true
-  local seen, out = {}, {}
-  local function scan(cls)
-    local depth = 0
-    while valid(cls) and depth < 8 do
-      local cn = ""; pcall(function() cn = cls:GetFName():ToString() end)
-      if seen[cn] or cn == "Actor" or cn == "Object" or cn == "ActorComponent" then break end
-      seen[cn] = true
-      pcall(function()
-        cls:ForEachFunction(function(f)
-          local fn = ""; pcall(function() fn = f:GetFName():ToString() end)
-          local l = fn:lower()
-          if l:find("listen") or l:find("audio") or l:find("sound") or l:find("^ak") or l:find("ears") or l:find("mix") then
-            out[#out + 1] = cn .. ":" .. fn
-          end
-        end)
-      end)
-      local ok, sup = pcall(function() return cls:GetSuperStruct() end)
-      cls = ok and sup or nil
-      depth = depth + 1
-    end
-  end
-  for _, o in ipairs({ S.pc1, S.pc1.PlayerCameraManager, audioMgr(), S.p1 }) do
-    pcall(function() if valid(o) then scan(o:GetClass()) end end)
-  end
-  pcall(function() scan(StaticFindObject("/Script/Kosmos.KosmosAudioBlueprintLibrary")) end)
-  trail("функции звука/ушей: " .. table.concat(out, ", "))
-end
--- Колесо, рычаги и т.п.: игра переключает камеру на особый план предмета
--- (StartExternalOverTime). Камера у игры одна — игрока 1, поэтому когда
--- колесо крутит игрок 2, камера первого уезжала к нему. Если игрок 1 не в
--- зоне этого плана (или экран разделён) — отменяем переключение у камеры
--- игрока 1 и показываем этот план во второй половине экрана.
-S.hookExternalCam = function()
-  if S.extHookOk then return end
-  local base = "/Script/CameraSystemRuntime.CameraManager:"
-  local okA = pcall(function()
-    RegisterHook(base .. "StartExternalOverTime", function(ctx, camP, timeP, easeP)
-      local cm, cam, ease = nil, nil, 0
-      pcall(function() cm = ctx:get() end)
-      pcall(function() cam = camP:get() end)
-      pcall(function() ease = easeP:get() end)
-      if not (S.coop and valid(cm) and valid(S.pc1) and cm == S.pc1.PlayerCameraManager and valid(cam)) then return end
-      local p1In = false
-      pcall(function() p1In = S.inRoomVol(cam, S.p1:K2_GetActorLocation()) end)
-      if S.split or not p1In then
-        S.cam2External = cam; S.camSnap = true; RC.pickAt = 0
-        local nm = ""; pcall(function() nm = cam:GetFName():ToString() end)
-        trail("камера 1: игра переключила на план " .. nm .. " — оставил камеру игрока 1 на нём, план отдал второму")
-        local function undo()
-          S.cam2ExtStopping = true
-          pcall(function() cm:StopExternalOverTime(0.3, ease) end)
-          S.cam2ExtStopping = false
-        end
-        if ExecuteWithDelay then ExecuteWithDelay(30, function() ExecuteInGameThread(undo) end) else undo() end
-      end
-    end)
-  end)
-  local okB = pcall(function()
-    RegisterHook(base .. "StopExternalOverTime", function(ctx)
-      local cm = nil; pcall(function() cm = ctx:get() end)
-      if valid(S.pc1) and cm == S.pc1.PlayerCameraManager and S.cam2External and not S.cam2ExtStopping then
-        -- игра сама закончила план (колесо отпустили) — второй возвращается к своей комнате
-        S.cam2External = nil; RC.pickAt = 0
-        trail("камера 2: особый план закончился — снова своя комната")
-      end
-    end)
-  end)
-  S.extHookOk = okA
-  log(okA and "камера: особые планы предметов перехвачены" or "камера: не удалось перехватить особые планы")
-end
--- Разбор «камера игрока 1 уезжает к колесу»: записываем вызовы функций
--- колеса и системы камер игры (не чаще 3 раз за 10 с на функцию).
-S.installCamTrace = function()
-  if S.camTraceOn or CFG.cam_trace == false then return end
-  S.camTraceOn = true
-  local targets = {}
-  pcall(function()
-    ForEachUObject(function(o)
-      pcall(function()
-        local fn = o:GetFullName()
-        if fn:find("^Class /Script/CameraSystemRuntime%.") or fn:find("^BlueprintGeneratedClass /Game/.-BP_Crank") or fn:find("^Class /Script/Kosmos%.KosmosCamera") then
-          targets[#targets + 1] = o
-        end
-      end)
-    end)
-  end)
-  local n = 0
-  for _, cls in ipairs(targets) do
-    local cn = ""; pcall(function() cn = cls:GetFName():ToString() end)
-    pcall(function()
-      cls:ForEachFunction(function(f)
-        pcall(function()
-          local fname = f:GetFName():ToString()
-          if fname:find("^Get") or fname:find("^Is") or fname:find("^Has") or fname:find("Tick") or fname:find("Ubergraph") then return end
-          local full = f:GetFullName():gsub("^Function ", "")
-          RegisterHook(full, function(ctx, ...)
-            S.camTraceCnt = S.camTraceCnt or {}
-            local c = S.camTraceCnt[full]; local t = now()
-            if not c or t - c.t > 10 then c = { t = t, n = 0 }; S.camTraceCnt[full] = c end
-            c.n = c.n + 1; if c.n > 3 then return end
-            local parts = {}
-            for _, prm in ipairs({ ... }) do
-              local okg, v = pcall(function() return prm:get() end)
-              local d = okg and S.audioTraceArg(v) or nil
-              if d and #parts < 4 then parts[#parts + 1] = d end
-            end
-            trail("камера игры: " .. cn .. "." .. fname .. (#parts > 0 and (" (" .. table.concat(parts, ", ") .. ")") or ""))
-          end)
-          n = n + 1
-        end)
-      end)
-    end)
-  end
-  trail(string.format("запись вызовов камер: %d классов, %d функций", #targets, n))
-end
-S.logCam1Pull = function()
-  if not S.camPropsDumped then
-    S.camPropsDumped = true
-    pcall(S.dumpProps, S.pc1.PlayerCameraManager, "камеры игрока 1")
-    pcall(function() local r = pickRoomCam(S.p1:K2_GetActorLocation()); if valid(r) then S.dumpProps(r, "комнатной камеры " .. r:GetFName():ToString()) end end)
-  end
-  local cm = S.pc1.PlayerCameraManager
-  local p1l = S.p1:K2_GetActorLocation()
-  local function nm(x) return valid(x) and x:GetFName():ToString() or "нет" end
-  local r1, r2 = nil, nil
-  pcall(function() r1 = pickRoomCam(p1l); r2 = pickRoomCam(S.buddy:K2_GetActorLocation()) end)
-  local n = 0; for _ in pairs(S.dhMuted) do n = n + 1 end
-  local key = nm(r1) .. "/" .. nm(r2) .. "/" .. n
-  local okc, cl = pcall(function() return cm:GetCameraLocation() end)
-  local d = okc and dist(cl, p1l) or -1
-  if key ~= S.cam1PullKey or math.abs(d - (S.cam1PullD or 0)) > 400 then
-    S.cam1PullKey, S.cam1PullD = key, d
-    trail(string.format("камера 1 (разделён): до Low %.0f см | зона игрока 1: %s, игрока 2: %s, выключено зон: %d", d, nm(r1), nm(r2), n))
-  end
-end
 S.midCamTick = function()
   if S.frames % 6 == 3 then S.dyingNow = S.anyDying() end
-  if S.frames % 10 == 5 and (S.split or next(S.dhMuted)) then pcall(S.muteP2Rooms) end
-  if S.split and S.frames % 60 == 15 then pcall(S.logCam1Pull) end
   if CFG.shared_center == false then return end
   local c = S.ensurePOI()
   if not c then return end
@@ -4369,4 +4093,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.10.12 загружен. F9 — меню кооператива")
+log("v9.11 загружен. F9 — меню кооператива")
