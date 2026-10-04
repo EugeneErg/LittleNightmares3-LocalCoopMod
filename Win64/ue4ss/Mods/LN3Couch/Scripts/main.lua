@@ -1,4 +1,4 @@
--- LN3Couch v9.10 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.10.2 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -597,14 +597,20 @@ updateCam2Pose = function()
   pcall(function()
     local bl = S.buddy:K2_GetActorLocation()
     local hidden = false; pcall(function() hidden = S.buddy:IsHidden() end)
-    if S.camFrozenAt and S.frames - S.camFrozenAt < 180 and (hidden or (S.lastBuddyLoc and dist(bl, S.lastBuddyLoc) > 300)) then
-      frozen = true
-    elseif hidden or (S.lastBuddyLoc and dist(bl, S.lastBuddyLoc) > 1500) then
-      -- герой исчез или «улетел» (смерть) — камера остаётся на его последнем месте
+    local jump = S.lastBuddyLoc and dist(bl, S.lastBuddyLoc) or 0
+    if hidden then
+      -- герой спрятан игрой (смерть) — камера стоит на его последнем месте
+      S.camFrozenAt = S.camFrozenAt or S.frames; frozen = true
+    elseif S.camFrozenAt and S.frames - S.camFrozenAt < 180 then
+      frozen = true   -- даём игре закончить перенос героя
+    elseif jump > 1500 and not S.camFrozenAt then
+      -- герой «улетел» (смерть, перенос) — пару секунд держим камеру на месте
       S.camFrozenAt = S.frames; frozen = true
-      trail("вторая камера: герой исчез — держу последнее место")
+      trail("вторая камера: герой перенёсся — жду и ставлю камеру к нему")
     else
-      if S.lastBuddyLoc and dist(bl, S.lastBuddyLoc) > 500 then S.camSnap = true; RC.pickAt = 0 end
+      -- после ожидания (или большого скачка) камера сразу встаёт к герою —
+      -- раньше она могла навсегда остаться на старом месте
+      if S.camFrozenAt or jump > 500 then S.camSnap = true; RC.pickAt = 0 end
       S.lastBuddyLoc = bl; S.camFrozenAt = nil
     end
   end)
@@ -851,8 +857,8 @@ S.decideSplitSides = function()
   end)
 end
 -- Без чёрных полос: камерам разрешаем подстраиваться под форму половины
--- экрана. Слева/справа сохраняется вертикальный обзор, сверху/снизу —
--- горизонтальный.
+-- экрана. Слева/справа сохраняется горизонтальный обзор, сверху/снизу —
+-- вертикальный: герой не выходит из кадра раньше, чем на целом экране.
 S.applySplitAspect = function(on)
   S.aspectSaved = S.aspectSaved or { lp = {}, cams = {} }
   local A = S.aspectSaved
@@ -864,7 +870,10 @@ S.applySplitAspect = function(on)
       local key = lp:GetFullName()
       if on then
         if A.lp[key] == nil then A.lp[key] = lp.AspectRatioAxisConstraint end
-        lp.AspectRatioAxisConstraint = S.layoutLR() and 0 or 1   -- 0: держать вертикальный обзор, 1: горизонтальный
+        -- держим обзор по той стороне, которая у половины стала меньше: слева/справа —
+        -- ширину (1), сверху/снизу — высоту (0). Тогда в половину помещается не
+        -- меньше, чем на целом экране, а по другой стороне видно даже больше.
+        lp.AspectRatioAxisConstraint = S.layoutLR() and 1 or 0
       elseif A.lp[key] ~= nil then
         lp.AspectRatioAxisConstraint = A.lp[key]; A.lp[key] = nil
       end
@@ -1475,19 +1484,6 @@ S.audioProbeTick = function()
   S.audioProbeLast = line
   trail(string.format("звук (%s): %s", S.split and "разделён" or "общий", line))
 end
--- Звук после подключения второго игрока. Игра в своём коде переносит «уши»
--- на камеру второго игрока, и даже когда мы возвращаем их игроку 1, весь
--- звук молчит — до первой смерти. При смерти его чинит возрождение героев.
--- Поэтому сразу после подключения второго игрока один раз вызываем
--- возрождение игры (без самой смерти): герои остаются на точке, звук есть.
-S.respawnForAudio = function()
-  if CFG.audio_respawn == false or not (S.coop and valid(S.p1)) then return end
-  local dc = nil
-  pcall(function() dc = S.p1:GetComponentByClass(StaticFindObject("/Script/Kosmos.KosmosCharacterDeathComponent")) end)
-  if not valid(dc) then trail("звук: у героя нет компонента смерти"); return end
-  local ok, e = pcall(function() dc:RespawnPlayers() end)
-  log("звук: возрождение героев для звука — %s", ok and "сделано" or ("ошибка: " .. tostring(e)))
-end
 local function keepListener()
   if not valid(AUDIO.owner) then return end
   local o = listenerOwner()
@@ -1496,12 +1492,6 @@ local function keepListener()
     if valid(lib) then
       try("RegisterDefaultListener", function() lib:RegisterDefaultListener(S.pc1, AUDIO.owner) end)
       S.lastListenerFix = now()
-      if ExecuteWithDelay then
-        if not S.audioRespawnDone then
-          S.audioRespawnDone = true
-          ExecuteWithDelay(1500, function() ExecuteInGameThread(function() pcall(S.respawnForAudio) end) end)
-        end
-      end
       if not AUDIO.logged then AUDIO.logged = true; log("звук: игра переключила слушателя на %s — вернул на %s", cname(o), cname(AUDIO.owner)) end
       if ExecuteWithDelay then
         ExecuteWithDelay(300, function() ExecuteInGameThread(function() pcall(refreshAmbience) end) end)
@@ -1608,7 +1598,7 @@ local function setCoop(on)
     S.enemy.listAt, S.enemy.killAt, S.enemy.bbAt, S.enemy.st, S.enemy.pos = -10000, -10000, {}, {}, {}
     if not acquire() then toast("Не нашёл двух героев — загрузите игру"); return end
     S.coop, S.split = true, false
-    S.audioRespawnDone = false
+    S.lastBuddyLoc, S.camFrozenAt = nil, nil   -- место героя с прошлого уровня не годится
     -- запоминаем мир, в котором включились: иначе проверка смены уровня,
     -- не успевшая заметить загрузку, сразу же приостановит кооператив
     pcall(function() S.worldName = UEHelpers.GetWorld():GetFullName() end)
@@ -4024,4 +4014,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.10 загружен. F9 — меню кооператива")
+log("v9.10.2 загружен. F9 — меню кооператива")
