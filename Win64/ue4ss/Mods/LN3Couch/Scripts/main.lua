@@ -1,4 +1,4 @@
--- LN3Couch v9.10.10 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.10.11 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -593,6 +593,7 @@ local function roomCamTarget()
   if S.frames >= RC.pickAt then
     RC.pickAt = S.frames + 10
     local a = pickRoomCam(p)
+    if valid(S.cam2External) then a = S.cam2External end   -- особый план (колесо и т.п.) — у второго
     -- «липкая» комната: пока герой рядом с зоной текущей камеры (запас 2,5 м),
     -- не перескакиваем на другую — рычаги, подсадки и прыжки иначе дёргают камеру
     if a ~= RC.cur and valid(RC.cur) then
@@ -1733,7 +1734,7 @@ local function setCoop(on)
     -- не успевшая заметить загрузку, сразу же приостановит кооператив
     pcall(function() S.worldName = UEHelpers.GetWorld():GetFullName() end)
     rememberListener()
-    pcall(S.installCamTrace)
+    pcall(S.hookExternalCam)
     S.ambBase = S.ambienceState()
     if S.ambBase then trail(string.format("звук до кооператива: фон зоны=%s, общий фон=%s", tostring(S.ambBase.v), tostring(S.ambBase.g))) end
     ensurePC2()
@@ -2776,6 +2777,49 @@ S.dumpAudioFns = function()
   end
   pcall(function() scan(StaticFindObject("/Script/Kosmos.KosmosAudioBlueprintLibrary")) end)
   trail("функции звука/ушей: " .. table.concat(out, ", "))
+end
+-- Колесо, рычаги и т.п.: игра переключает камеру на особый план предмета
+-- (StartExternalOverTime). Камера у игры одна — игрока 1, поэтому когда
+-- колесо крутит игрок 2, камера первого уезжала к нему. Если игрок 1 не в
+-- зоне этого плана (или экран разделён) — отменяем переключение у камеры
+-- игрока 1 и показываем этот план во второй половине экрана.
+S.hookExternalCam = function()
+  if S.extHookOk then return end
+  local base = "/Script/CameraSystemRuntime.CameraManager:"
+  local okA = pcall(function()
+    RegisterHook(base .. "StartExternalOverTime", function(ctx, camP, timeP, easeP)
+      local cm, cam, ease = nil, nil, 0
+      pcall(function() cm = ctx:get() end)
+      pcall(function() cam = camP:get() end)
+      pcall(function() ease = easeP:get() end)
+      if not (S.coop and valid(cm) and valid(S.pc1) and cm == S.pc1.PlayerCameraManager and valid(cam)) then return end
+      local p1In = false
+      pcall(function() p1In = S.inRoomVol(cam, S.p1:K2_GetActorLocation()) end)
+      if S.split or not p1In then
+        S.cam2External = cam; S.camSnap = true; RC.pickAt = 0
+        local nm = ""; pcall(function() nm = cam:GetFName():ToString() end)
+        trail("камера 1: игра переключила на план " .. nm .. " — оставил камеру игрока 1 на нём, план отдал второму")
+        local function undo()
+          S.cam2ExtStopping = true
+          pcall(function() cm:StopExternalOverTime(0.3, ease) end)
+          S.cam2ExtStopping = false
+        end
+        if ExecuteWithDelay then ExecuteWithDelay(30, function() ExecuteInGameThread(undo) end) else undo() end
+      end
+    end)
+  end)
+  local okB = pcall(function()
+    RegisterHook(base .. "StopExternalOverTime", function(ctx)
+      local cm = nil; pcall(function() cm = ctx:get() end)
+      if valid(S.pc1) and cm == S.pc1.PlayerCameraManager and S.cam2External and not S.cam2ExtStopping then
+        -- игра сама закончила план (колесо отпустили) — второй возвращается к своей комнате
+        S.cam2External = nil; RC.pickAt = 0
+        trail("камера 2: особый план закончился — снова своя комната")
+      end
+    end)
+  end)
+  S.extHookOk = okA
+  log(okA and "камера: особые планы предметов перехвачены" or "камера: не удалось перехватить особые планы")
 end
 -- Разбор «камера игрока 1 уезжает к колесу»: записываем вызовы функций
 -- колеса и системы камер игры (не чаще 3 раз за 10 с на функцию).
@@ -4317,4 +4361,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.10.10 загружен. F9 — меню кооператива")
+log("v9.10.11 загружен. F9 — меню кооператива")
