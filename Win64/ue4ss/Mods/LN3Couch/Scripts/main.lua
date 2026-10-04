@@ -1,4 +1,4 @@
--- LN3Couch v9.11.6 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.11.7 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -2224,6 +2224,11 @@ S.installInvTrace = function()
     while valid(c) and depth < 4 do
       local cn = ""; pcall(function() cn = c:GetFName():ToString() end)
       if cn == "Actor" or cn == "ActorComponent" or cn == "Object" then break end
+      if cn:find("Inventory") or cn:find("Flashlight") or cn:find("Weapon") or cn:find("Item") then
+        local names = {}
+        pcall(function() c:ForEachFunction(function(f) names[#names + 1] = f:GetFName():ToString() end) end)
+        trail("вещи: функции " .. cn .. ": " .. table.concat(names, ", "))
+      end
       pcall(function()
         c:ForEachFunction(function(f)
           pcall(function()
@@ -2240,7 +2245,7 @@ S.installInvTrace = function()
                   if valid(ow) then S.heldItem[ow:GetFullName()] = (fname == "OnWeaponTakeOut") and it or nil; S.heldItemKnown[ow:GetFullName()] = true end
                 end)
               end
-              if CFG.inv_trace ~= true then return end
+              if CFG.inv_trace == false then return end
               S.invTraceCnt = S.invTraceCnt or {}
               local cc = S.invTraceCnt[full]; local t = now()
               if not cc or t - cc.t > 10 then cc = { t = t, n = 0 }; S.invTraceCnt[full] = cc end
@@ -2299,15 +2304,6 @@ S.p1HeldItem = function()
     if S.heldItem and S.heldItemKnown and S.heldItemKnown[k] then known = true end
   end)
   if valid(it) then return it end
-  if known then return nil end
-  -- до первого «достал/убрал» не знаем: считаем в руках видимую вещь героя
-  for _, rec in pairs(S.itemOwners or {}) do
-    local found = nil
-    pcall(function()
-      if valid(rec.a) and rec.owner == S.p1 and cname(rec.a):find("Inventory") and not rec.a.bHidden then found = rec.a end
-    end)
-    if found then return found end
-  end
   return nil
 end
 S.boostPendingTick = function()
@@ -4295,4 +4291,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.11.6 загружен. F9 — меню кооператива")
+log("v9.11.7 загружен. F9 — меню кооператива")
