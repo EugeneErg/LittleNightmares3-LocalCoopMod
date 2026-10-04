@@ -1,4 +1,4 @@
--- LN3Couch v9.7 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.7.1 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -3476,7 +3476,7 @@ S.uiText = function(w)
   if t and t ~= "" then return (t:gsub("\n", "\\n")) end
 end
 S.uiTree = function(f, w, depth)
-  if depth > 14 or not valid(w) then return end
+  if depth > 24 or not valid(w) then return end
   local cls = ""; pcall(function() cls = w:GetClass():GetFName():ToString() end)
   local line = string.rep("  ", depth) .. wfname(w) .. " [" .. cls .. "]"
   local t = S.uiText(w); if t then line = line .. " = «" .. t .. "»" end
@@ -3485,32 +3485,59 @@ S.uiTree = function(f, w, depth)
   f:write(line, "\n")
   -- вложенное окно со своим деревом
   local okt, root = pcall(function() return w.WidgetTree.RootWidget end)
-  if okt and valid(root) and depth > 0 then S.uiTree(f, root, depth + 1); return end
+  if okt and valid(root) and depth > 0 then S.uiTree(f, root, depth + 1) end
   for _, c in ipairs(children(w)) do S.uiTree(f, c, depth + 1) end
   local okc, content = pcall(function() return w:GetContent() end)
   if okc and valid(content) and #children(w) == 0 then S.uiTree(f, content, depth + 1) end
 end
 S.uiDumpTick = function()
   if CFG.ui_dump == false or S.frames % 60 ~= 30 then return end
-  local list = FindAllOf("UserWidget") or {}
-  for _, w in ipairs(list) do
-    local okv, vis = pcall(function() return w:IsVisible() and w:IsInViewport() end)
+  -- 1) все надписи игры, какие сейчас существуют, с путём до них
+  local nNew = 0
+  local f = nil
+  for _, cls in ipairs({ "TextBlock", "RichTextBlock" }) do
+    for _, tb in ipairs(FindAllOf(cls) or {}) do
+      if valid(tb) then
+        local full = wid(tb)
+        local path = full:gsub("^%S+%s+", ""):gsub("_%d%d%d%d+", "")
+        local t = S.uiText(tb)
+        if t and not path:find("^/Engine/Transient%.GameEngine:BP_KosmosGameInstance_C%.ResolutionScalarWidget_C%.WidgetTree%.SplashBNEE") then
+          local key = path .. "=" .. t
+          if not S.uiSeen[key] then
+            S.uiSeen[key] = true
+            f = f or io.open("ue4ss/Mods/LN3Couch/ui_texts.txt", "a")
+            if f then f:write(path, " = «", t, "»\n"); nNew = nNew + 1 end
+          end
+        end
+      end
+    end
+  end
+  if f then f:close() end
+  -- 2) устройство окон: каждое видимое окно игры (и вложенные)
+  for _, w in ipairs(FindAllOf("UserWidget") or {}) do
+    local okv, vis = pcall(function() return w:IsVisible() end)
     if valid(w) and okv and vis then
       local cls = ""; pcall(function() cls = w:GetClass():GetFName():ToString() end)
-      local n = S.uiSeen[cls] or 0
-      if n < 3 then
-        -- одно и то же окно пишем заново, только если поменялись надписи
+      local n = S.uiSeen["#" .. cls] or 0
+      if n < 2 then
         local sig = {}
-        local function collect(x, d) if d > 14 or not valid(x) then return end local t = S.uiText(x); if t then sig[#sig + 1] = t end for _, c in ipairs(children(x)) do collect(c, d + 1) end end
+        local function collect(x, d)
+          if d > 20 or not valid(x) then return end
+          sig[#sig + 1] = wfname(x)
+          local t = S.uiText(x); if t then sig[#sig + 1] = t end
+          local okt, root = pcall(function() return x.WidgetTree.RootWidget end)
+          if okt and valid(root) and d > 0 then collect(root, d + 1) end
+          for _, c in ipairs(children(x)) do collect(c, d + 1) end
+        end
         pcall(function() collect(w.WidgetTree.RootWidget, 0) end)
         local key = cls .. "|" .. table.concat(sig, "|")
         if not S.uiSeen[key] then
-          S.uiSeen[key] = true; S.uiSeen[cls] = n + 1
-          local f = io.open("ue4ss/Mods/LN3Couch/ui_dump.txt", "a")
-          if f then
-            f:write("\n=== ", cls, "   ", wid(w), "   язык: ", tostring(S.lang or "?"), "\n")
-            pcall(function() S.uiTree(f, w.WidgetTree.RootWidget, 0) end)
-            f:close()
+          S.uiSeen[key] = true; S.uiSeen["#" .. cls] = n + 1
+          local g = io.open("ue4ss/Mods/LN3Couch/ui_dump.txt", "a")
+          if g then
+            g:write("\n=== ", cls, "   ", wid(w), "   язык: ", tostring(S.lang or "?"), "\n")
+            pcall(function() S.uiTree(g, w.WidgetTree.RootWidget, 0) end)
+            g:close()
           end
         end
       end
@@ -3794,4 +3821,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.7 загружен. F9 — меню кооператива")
+log("v9.7.1 загружен. F9 — меню кооператива")
