@@ -1,4 +1,4 @@
--- LN3Couch v9.10.7 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.10.8 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -2695,7 +2695,46 @@ S.suppressPOIs = function()
   end
 end
 -- Для разбора «камера игрока 1 уезжает к колесу»: что сейчас влияет на неё
+-- Разовый разбор: какие поля у камеры игрока 1 и у комнатной камеры, и
+-- какие из них указывают на героев (кого камера считает целью).
+S.dumpProps = function(obj, label)
+  local out = {}
+  local cls = obj:GetClass()
+  local depth = 0
+  while valid(cls) and depth < 6 do
+    local cn = cls:GetFName():ToString()
+    if cn == "Actor" or cn == "Object" then break end
+    pcall(function()
+      cls:ForEachProperty(function(pr)
+        local n = pr:GetFName():ToString()
+        local pt = ""; pcall(function() pt = pr:GetClass():GetFName():ToString() end)
+        local v = nil
+        pcall(function()
+          local x = obj[n]
+          if pt == "ObjectProperty" or pt == "WeakObjectProperty" or pt == "SoftObjectProperty" then v = clsName(x)
+          elseif pt == "ArrayProperty" then
+            local items = {}
+            pcall(function() x:ForEach(function(_, el) if #items < 4 then local e = el:get(); items[#items + 1] = (type(e) == "userdata" and clsName(e)) or tostring(e) end end) end)
+            local okn, nn = pcall(function() return x:GetArrayNum() end)
+            v = "[" .. tostring(okn and nn or "?") .. ": " .. table.concat(items, ",") .. "]"
+          elseif pt == "BoolProperty" or pt:find("Int") or pt == "FloatProperty" or pt == "ByteProperty" or pt == "EnumProperty" or pt == "NameProperty" then
+            v = type(x) == "userdata" and (select(2, pcall(function() return x:ToString() end))) or tostring(x)
+          end
+        end)
+        if v ~= nil then out[#out + 1] = n .. "=" .. tostring(v) end
+      end)
+    end)
+    local ok, sup = pcall(function() return cls:GetSuperStruct() end)
+    cls = ok and sup or nil; depth = depth + 1
+  end
+  trail("поля " .. label .. ": " .. table.concat(out, "; "))
+end
 S.logCam1Pull = function()
+  if not S.camPropsDumped then
+    S.camPropsDumped = true
+    pcall(S.dumpProps, S.pc1.PlayerCameraManager, "камеры игрока 1")
+    pcall(function() local r = pickRoomCam(S.p1:K2_GetActorLocation()); if valid(r) then S.dumpProps(r, "комнатной камеры " .. r:GetFName():ToString()) end end)
+  end
   local cm = S.pc1.PlayerCameraManager
   local p1l = S.p1:K2_GetActorLocation()
   local function nm(x) return valid(x) and x:GetFName():ToString() or "нет" end
@@ -4185,4 +4224,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.10.7 загружен. F9 — меню кооператива")
+log("v9.10.8 загружен. F9 — меню кооператива")
