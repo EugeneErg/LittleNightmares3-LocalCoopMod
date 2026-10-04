@@ -1,4 +1,4 @@
--- LN3Couch v9.10.5 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.10.6 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -1501,14 +1501,12 @@ end
 -- смерти — его чинит возрождение героев. Вызываем возрождение игры один раз
 -- сразу после подключения (без смерти). Параметры функции подбираем по их
 -- типам, т.к. заранее их не знаем.
-S.respawnForAudio = function()
-  if CFG.audio_respawn ~= true or not (S.coop and valid(S.p1)) then return end
-  local dc = nil
-  pcall(function() dc = S.p1:GetComponentByClass(StaticFindObject("/Script/Kosmos.KosmosCharacterDeathComponent")) end)
-  if not valid(dc) then trail("звук: у героя нет компонента смерти"); return end
+-- Вызов функции игры, параметры которой заранее не известны: подставляем
+-- значения по типам (объект — герой игрока 1, число — 0, флаг — false...).
+S.callGameFn = function(obj, fnPath, fnName)
   local args, desc = {}, {}
   pcall(function()
-    StaticFindObject("/Script/Kosmos.KosmosCharacterDeathComponent:RespawnPlayers"):ForEachProperty(function(pr)
+    StaticFindObject(fnPath):ForEachProperty(function(pr)
       local n = pr:GetFName():ToString()
       if n == "ReturnValue" then return end
       local cn = ""; pcall(function() cn = pr:GetClass():GetFName():ToString() end)
@@ -1518,16 +1516,50 @@ S.respawnForAudio = function()
       elseif cn == "StrProperty" then v = ""
       elseif cn == "NameProperty" then v = FName("None")
       elseif cn == "StructProperty" then v = {}
-      elseif cn:find("Object") then
-        local ln = n:lower()
-        v = (ln:find("killer") or ln:find("instigator") or ln:find("causer")) and nil or S.p1
-      end
+      elseif cn:find("Object") then v = S.p1 end
       args[#args + 1] = v
-      desc[#desc + 1] = n .. ":" .. cn .. "=" .. (v == S.p1 and "герой 1" or tostring(v))
+      desc[#desc + 1] = n .. ":" .. cn
     end)
   end)
-  local ok, e = pcall(function() dc:RespawnPlayers(table.unpack(args, 1, #desc)) end)
-  log("звук: возрождение героев (%s) — %s", table.concat(desc, ", "), ok and "сделано" or ("ошибка: " .. tostring(e)))
+  local ok, e = pcall(function() obj[fnName](obj, table.unpack(args, 1, #desc)) end)
+  return ok, e, table.concat(desc, ", ")
+end
+-- Звук: при подключении второго игрока весь звук иногда молчит до первой
+-- смерти. Чинить его так же, как смерть: сразу после подключения игрок 1
+-- погибает и возрождается на контрольной точке (после загрузки сохранения
+-- герои и так на ней). Выключается audio_kill = false.
+S.killForAudio = function()
+  if CFG.audio_kill == false or not (S.coop and valid(S.p1)) then return end
+  local done = false
+  -- что есть у игры для убийства героя (для разбора)
+  local fns = {}
+  local klib = StaticFindObject("/Script/Kosmos.Default__KosmosBlueprintFunctionLibrary")
+  pcall(function()
+    StaticFindObject("/Script/Kosmos.KosmosBlueprintFunctionLibrary"):ForEachFunction(function(f)
+      local n = f:GetFName():ToString()
+      if n:find("Kill") then fns[#fns + 1] = n end
+    end)
+  end)
+  trail("звук: функции убийства в библиотеке игры: " .. table.concat(fns, ", "))
+  for _, n in ipairs({ "KillPlayer", "KillCharacter", "KillPlayerCharacter" }) do
+    if not done and valid(klib) then
+      for _, have in ipairs(fns) do
+        if have == n then
+          local ok, e, d = S.callGameFn(klib, "/Script/Kosmos.KosmosBlueprintFunctionLibrary:" .. n, n)
+          log("звук: смерть героя через %s (%s) — %s", n, d, ok and "сделано" or ("ошибка: " .. tostring(e)))
+          done = ok
+        end
+      end
+    end
+  end
+  if not done then
+    local dc = nil
+    pcall(function() dc = S.p1:GetComponentByClass(StaticFindObject("/Script/Kosmos.KosmosCharacterDeathComponent")) end)
+    if valid(dc) then
+      local ok, e, d = S.callGameFn(dc, "/Script/Kosmos.KosmosCharacterDeathComponent:Kill_Server", "Kill_Server")
+      log("звук: смерть героя через Kill_Server (%s) — %s", d, ok and "сделано" or ("ошибка: " .. tostring(e)))
+    end
+  end
 end
 local function keepListener()
   if not valid(AUDIO.owner) then return end
@@ -1539,7 +1571,7 @@ local function keepListener()
       S.lastListenerFix = now()
       if ExecuteWithDelay and not S.audioRespawnDone then
         S.audioRespawnDone = true
-        ExecuteWithDelay(1500, function() ExecuteInGameThread(function() pcall(S.respawnForAudio) end) end)
+        ExecuteWithDelay(1500, function() ExecuteInGameThread(function() pcall(S.killForAudio) end) end)
       end
       if not AUDIO.logged then AUDIO.logged = true; log("звук: игра переключила слушателя на %s — вернул на %s", cname(o), cname(AUDIO.owner)) end
       if ExecuteWithDelay then
@@ -2628,9 +2660,36 @@ S.suppressPOIs = function()
     end
   end
 end
+-- Для разбора «камера игрока 1 уезжает к колесу»: что сейчас влияет на неё
+S.logCam1Pull = function()
+  local cm = S.pc1.PlayerCameraManager
+  local parts = {}
+  pcall(function()
+    local vt = cm:GetViewTarget(); parts[#parts + 1] = "вид=" .. clsName(vt)
+  end)
+  local cls = StaticFindObject(S.POI_CLASS)
+  local p1l = S.p1:K2_GetActorLocation()
+  pcall(function()
+    for _, c in ipairs(FindAllOf(cls:GetFName():ToString()) or {}) do
+      local okw, w = pcall(function() return c.mWeight end)
+      if valid(c) and okw and w and w > 0 then
+        local on = "?"; pcall(function() on = c:GetOwner():GetFName():ToString() end)
+        local d = -1; pcall(function() d = dist(c:K2_GetComponentLocation(), p1l) end)
+        parts[#parts + 1] = string.format("%s %.2f (%.0f см)", on, w, d)
+      end
+    end
+  end)
+  local key = table.concat(parts, "; ")
+  if key ~= S.cam1PullKey then
+    S.cam1PullKey = key
+    local okc, cl = pcall(function() return cm:GetCameraLocation() end)
+    trail(string.format("камера 1 (разделён): до Low %.0f см | %s", okc and dist(cl, p1l) or -1, key))
+  end
+end
 S.midCamTick = function()
   if S.frames % 6 == 3 then S.dyingNow = S.anyDying() end
   if S.frames % 10 == 5 and (S.split or next(S.poiMuted)) then pcall(S.suppressPOIs) end
+  if S.split and S.frames % 60 == 15 then pcall(S.logCam1Pull) end
   if CFG.shared_center == false then return end
   local c = S.ensurePOI()
   if not c then return end
@@ -4102,4 +4161,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.10.5 загружен. F9 — меню кооператива")
+log("v9.10.6 загружен. F9 — меню кооператива")
