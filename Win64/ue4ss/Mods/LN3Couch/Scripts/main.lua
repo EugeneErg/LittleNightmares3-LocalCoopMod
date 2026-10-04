@@ -1,4 +1,4 @@
--- LN3Couch v9.9.1 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.10 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -43,9 +43,14 @@ local function merge(dst, src) for k, v in pairs(src) do if type(v) == "table" a
 local function serialize(v, ind)
   ind = ind or ""
   if type(v) == "table" then
-    local keys = {}; for k in pairs(v) do keys[#keys + 1] = k end; table.sort(keys)
+    local keys = {}; for k in pairs(v) do keys[#keys + 1] = k end
+    table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
     local out = { "{\n" }
-    for _, k in ipairs(keys) do out[#out + 1] = string.format("%s  %s = %s,\n", ind, k, serialize(v[k], ind .. "  ")) end
+    for _, k in ipairs(keys) do
+      -- ключ-слово пишем как есть, всё остальное — в скобках и кавычках
+      local ks = (type(k) == "string" and k:match("^[%a_][%w_]*$")) and k or ("[" .. serialize(k) .. "]")
+      out[#out + 1] = string.format("%s  %s = %s,\n", ind, ks, serialize(v[k], ind .. "  "))
+    end
     out[#out + 1] = ind .. "}"; return table.concat(out)
   elseif type(v) == "string" then return string.format("%q", v) else return tostring(v) end
 end
@@ -58,9 +63,10 @@ local function loadSettings()
   local f = io.open(SAVE_PATH, "r")
   if f then
     local src = f:read("*a"); f:close()
-    local fn = load(src, "settings", "t", {})
+    local fn, perr = load(src, "settings", "t", {})
     local ok2, saved = pcall(fn or function() end)
-    if ok2 and type(saved) == "table" then merge(CFG, saved); log("сохранённые настройки загружены") end
+    if ok2 and type(saved) == "table" then merge(CFG, saved); log("сохранённые настройки загружены")
+    else log("settings.lua не читается (%s) — взяты настройки по умолчанию", tostring(perr or saved)) end
   end
 end
 
@@ -1326,6 +1332,64 @@ for _, fn in ipairs({ "PostGlobalAmbience", "SetGlobalAudioSettings", "PostGloba
     end)
   end)
 end
+-- Для разбора звука: все вызовы звуковой системы игры и Wwise (кроме опросов
+-- Get/Is/Has), не больше 3 записей на функцию за 10 с. Включается
+-- audio_trace = true в settings.lua.
+S.audioTraceArg = function(v)
+  if type(v) == "string" or type(v) == "number" or type(v) == "boolean" then return tostring(v) end
+  if type(v) ~= "userdata" then return nil end
+  local okt, t = pcall(function() return v:type() end)
+  if okt and (t == "FName" or t == "FString" or t == "FText") then
+    local oks, str = pcall(function() return v:ToString() end)
+    if oks then return str end
+  end
+  -- объект (например, звуковое событие): только живой, и только имя
+  if okt and type(t) == "string" and t ~= "FName" and t ~= "FString" and t ~= "FText" and valid(v) then
+    local okn, nm = pcall(function() return v:GetFName():ToString() end)
+    if okn then return nm end
+  end
+  return nil
+end
+S.installAudioTrace = function()
+  if S.audioTraceOn or CFG.audio_trace ~= true then return end
+  S.audioTraceOn = true
+  local skip = { PostGlobalAmbience = 1, SetGlobalAudioSettings = 1, PostGlobalMusic = 1, PostMusicPlayback = 1,
+    StopGlobalMusic = 1, StartGlobalMusic = 1, RegisterDefaultListener = 1 }
+  local n = 0
+  for _, path in ipairs({ "/Script/Kosmos.KosmosAudioBlueprintLibrary", "/Script/AkAudio.AkGameplayStatics" }) do
+    local cls = StaticFindObject(path)
+    if valid(cls) then
+      local cn = path:match("%.([%w_]+)$")
+      pcall(function()
+        cls:ForEachFunction(function(f)
+          pcall(function()
+            local fname = f:GetFName():ToString()
+            if skip[fname] or fname:find("^Get") or fname:find("^Is") or fname:find("^Has") then return end
+            local full = f:GetFullName():gsub("^Function ", "")
+            RegisterHook(full, function(ctx, ...)
+              S.audioTraceCnt = S.audioTraceCnt or {}
+              local c = S.audioTraceCnt[fname]
+              local t = now()
+              if not c or t - c.t > 10 then c = { t = t, n = 0 }; S.audioTraceCnt[fname] = c end
+              c.n = c.n + 1
+              if c.n > 3 then return end
+              local parts = {}
+              for _, prm in ipairs({ ... }) do
+                local okg, v = pcall(function() return prm:get() end)
+                local d = okg and S.audioTraceArg(v) or nil
+                if d and #parts < 4 then parts[#parts + 1] = d end
+              end
+              trail("звук игры: " .. cn .. "." .. fname .. (#parts > 0 and (" (" .. table.concat(parts, ", ") .. ")") or ""))
+            end)
+            n = n + 1
+          end)
+        end)
+      end)
+    end
+  end
+  log("запись звуковых вызовов: %d функций", n)
+end
+pcall(S.installAudioTrace)
 S.replayGlobalAudio = function()
   local lib = StaticFindObject("/Script/Kosmos.Default__KosmosAudioBlueprintLibrary")
   if not valid(lib) then return end
@@ -1385,7 +1449,9 @@ S.ambienceTick = function()
 end
 S.audioProbeTick = function()
   local due = false
-  for i, f in ipairs(S.audioProbe) do if f and S.frames >= f then S.audioProbe[i] = false; due = true end end
+  local left = false
+  for i, f in ipairs(S.audioProbe) do if f and S.frames >= f then S.audioProbe[i] = false; due = true elseif f then left = true end end
+  if not left then S.audioProbe = nil end
   if not due then return end
   local st = S.ambienceState() or {}
   local o = listenerOwner()
@@ -1401,8 +1467,26 @@ S.audioProbeTick = function()
   end)
   local first = "?"
   pcall(function() local arr = S.localPlayers(); first = (valid(arr[1]) and valid(S.lp2) and arr[1]:GetAddress() == S.lp2:GetAddress()) and "игрок 2" or "игрок 1" end)
-  trail(string.format("звук (%s): уши=%s, фон зоны=%s, общий фон=%s, первым в списке=%s, Ak у камер/контроллеров: %s",
-    S.split and "разделён" or "общий", cname(o), tostring(st.v), tostring(st.g), first, table.concat(aks, ", ")))
+  local ids = string.format("контроллеры: игрок 1=%s, игрок 2=%s", tostring(pcId(S.pc1)), tostring(pcId(S.pc2)))
+  local line = string.format("уши=%s, фон зоны=%s, общий фон=%s, первым в списке=%s, %s, Ak у камер/контроллеров: %s",
+    cname(o), tostring(st.v), tostring(st.g), first, ids, table.concat(aks, ", "))
+  local quiet = S.audioProbeQuiet; S.audioProbeQuiet = false
+  if quiet and line == S.audioProbeLast then return end
+  S.audioProbeLast = line
+  trail(string.format("звук (%s): %s", S.split and "разделён" or "общий", line))
+end
+-- Звук после подключения второго игрока. Игра в своём коде переносит «уши»
+-- на камеру второго игрока, и даже когда мы возвращаем их игроку 1, весь
+-- звук молчит — до первой смерти. При смерти его чинит возрождение героев.
+-- Поэтому сразу после подключения второго игрока один раз вызываем
+-- возрождение игры (без самой смерти): герои остаются на точке, звук есть.
+S.respawnForAudio = function()
+  if CFG.audio_respawn == false or not (S.coop and valid(S.p1)) then return end
+  local dc = nil
+  pcall(function() dc = S.p1:GetComponentByClass(StaticFindObject("/Script/Kosmos.KosmosCharacterDeathComponent")) end)
+  if not valid(dc) then trail("звук: у героя нет компонента смерти"); return end
+  local ok, e = pcall(function() dc:RespawnPlayers() end)
+  log("звук: возрождение героев для звука — %s", ok and "сделано" or ("ошибка: " .. tostring(e)))
 end
 local function keepListener()
   if not valid(AUDIO.owner) then return end
@@ -1412,6 +1496,12 @@ local function keepListener()
     if valid(lib) then
       try("RegisterDefaultListener", function() lib:RegisterDefaultListener(S.pc1, AUDIO.owner) end)
       S.lastListenerFix = now()
+      if ExecuteWithDelay then
+        if not S.audioRespawnDone then
+          S.audioRespawnDone = true
+          ExecuteWithDelay(1500, function() ExecuteInGameThread(function() pcall(S.respawnForAudio) end) end)
+        end
+      end
       if not AUDIO.logged then AUDIO.logged = true; log("звук: игра переключила слушателя на %s — вернул на %s", cname(o), cname(AUDIO.owner)) end
       if ExecuteWithDelay then
         ExecuteWithDelay(300, function() ExecuteInGameThread(function() pcall(refreshAmbience) end) end)
@@ -1491,6 +1581,7 @@ local function detectTick()
     S.detect = nil
     toast("Геймпад игрока 2 найден!")
     log("геймпад игрока 2 найден: номер контроллера %d", CFG.p2_controller_id)
+    S.audioProbe = { S.frames + 1, S.frames + 120, S.frames + 360 }
     return
   end
   if d.total > 60 * 20 then
@@ -1517,6 +1608,7 @@ local function setCoop(on)
     S.enemy.listAt, S.enemy.killAt, S.enemy.bbAt, S.enemy.st, S.enemy.pos = -10000, -10000, {}, {}, {}
     if not acquire() then toast("Не нашёл двух героев — загрузите игру"); return end
     S.coop, S.split = true, false
+    S.audioRespawnDone = false
     -- запоминаем мир, в котором включились: иначе проверка смены уровня,
     -- не успевшая заметить загрузку, сразу же приостановит кооператив
     pcall(function() S.worldName = UEHelpers.GetWorld():GetFullName() end)
@@ -1529,6 +1621,7 @@ local function setCoop(on)
       if registryWorks() then takeBuddy() else log("режим второго игрока недоступен — управляю через ИИ") end
     end
     toast("Игрок 2 подключён: " .. heroName(S.buddy))
+    S.audioProbe = { S.frames + 1, S.frames + 120, S.frames + 360 }
     if CFG.device == "gamepad" and not CFG.p2_controller_confirmed then S.detectPending = true end
   else
     S.coop, S.resumeCoop, S.drag, S.cbox = false, false, nil, nil
@@ -1566,8 +1659,12 @@ if CFG.coop_enabled then S.resumeCoop = true end
 local function resumeTick()
   if not S.resumeCoop or S.coop or S.frames % 60 ~= 0 then return end
   local pc = findPC1()
-  if not (valid(pc) and isHero(pc.Pawn)) then return end
-  if not findBuddy(pc.Pawn) then return end
+  if not (valid(pc) and isHero(pc.Pawn)) or not findBuddy(pc.Pawn) then S.resumeReady = 0; return end
+  -- можно задать задержку (resume_delay_s, в секундах); по умолчанию сразу,
+  -- чтобы напарником не успел побегать ИИ
+  S.resumeReady = (S.resumeReady or 0) + 1
+  if S.resumeReady < (CFG.resume_delay_s or 1) then return end
+  S.resumeReady = 0
   S.resumeCoop = false
   log("кооператив возобновлён")
   setCoop(true)
@@ -3927,4 +4024,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.9.1 загружен. F9 — меню кооператива")
+log("v9.10 загружен. F9 — меню кооператива")
