@@ -1,4 +1,4 @@
--- LN3Couch v9.10.1 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.10.2 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -857,8 +857,8 @@ S.decideSplitSides = function()
   end)
 end
 -- Без чёрных полос: камерам разрешаем подстраиваться под форму половины
--- экрана. Слева/справа сохраняется вертикальный обзор, сверху/снизу —
--- горизонтальный.
+-- экрана. Слева/справа сохраняется горизонтальный обзор, сверху/снизу —
+-- вертикальный: герой не выходит из кадра раньше, чем на целом экране.
 S.applySplitAspect = function(on)
   S.aspectSaved = S.aspectSaved or { lp = {}, cams = {} }
   local A = S.aspectSaved
@@ -870,7 +870,10 @@ S.applySplitAspect = function(on)
       local key = lp:GetFullName()
       if on then
         if A.lp[key] == nil then A.lp[key] = lp.AspectRatioAxisConstraint end
-        lp.AspectRatioAxisConstraint = S.layoutLR() and 0 or 1   -- 0: держать вертикальный обзор, 1: горизонтальный
+        -- держим обзор по той стороне, которая у половины стала меньше: слева/справа —
+        -- ширину (1), сверху/снизу — высоту (0). Тогда в половину помещается не
+        -- меньше, чем на целом экране, а по другой стороне видно даже больше.
+        lp.AspectRatioAxisConstraint = S.layoutLR() and 1 or 0
       elseif A.lp[key] ~= nil then
         lp.AspectRatioAxisConstraint = A.lp[key]; A.lp[key] = nil
       end
@@ -4037,4 +4040,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.10.1 загружен. F9 — меню кооператива")
+log("v9.10.2 загружен. F9 — меню кооператива")
