@@ -1,4 +1,4 @@
--- LN3Couch v9.9.1 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.9.2 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -1385,7 +1385,9 @@ S.ambienceTick = function()
 end
 S.audioProbeTick = function()
   local due = false
-  for i, f in ipairs(S.audioProbe) do if f and S.frames >= f then S.audioProbe[i] = false; due = true end end
+  local left = false
+  for i, f in ipairs(S.audioProbe) do if f and S.frames >= f then S.audioProbe[i] = false; due = true elseif f then left = true end end
+  if not left then S.audioProbe = nil end
   if not due then return end
   local st = S.ambienceState() or {}
   local o = listenerOwner()
@@ -1401,8 +1403,13 @@ S.audioProbeTick = function()
   end)
   local first = "?"
   pcall(function() local arr = S.localPlayers(); first = (valid(arr[1]) and valid(S.lp2) and arr[1]:GetAddress() == S.lp2:GetAddress()) and "игрок 2" or "игрок 1" end)
-  trail(string.format("звук (%s): уши=%s, фон зоны=%s, общий фон=%s, первым в списке=%s, Ak у камер/контроллеров: %s",
-    S.split and "разделён" or "общий", cname(o), tostring(st.v), tostring(st.g), first, table.concat(aks, ", ")))
+  local ids = string.format("контроллеры: игрок 1=%s, игрок 2=%s", tostring(pcId(S.pc1)), tostring(pcId(S.pc2)))
+  local line = string.format("уши=%s, фон зоны=%s, общий фон=%s, первым в списке=%s, %s, Ak у камер/контроллеров: %s",
+    cname(o), tostring(st.v), tostring(st.g), first, ids, table.concat(aks, ", "))
+  local quiet = S.audioProbeQuiet; S.audioProbeQuiet = false
+  if quiet and line == S.audioProbeLast then return end
+  S.audioProbeLast = line
+  trail(string.format("звук (%s): %s", S.split and "разделён" or "общий", line))
 end
 local function keepListener()
   if not valid(AUDIO.owner) then return end
@@ -1491,6 +1498,7 @@ local function detectTick()
     S.detect = nil
     toast("Геймпад игрока 2 найден!")
     log("геймпад игрока 2 найден: номер контроллера %d", CFG.p2_controller_id)
+    S.audioProbe = { S.frames + 1, S.frames + 120, S.frames + 360 }
     return
   end
   if d.total > 60 * 20 then
@@ -1529,6 +1537,7 @@ local function setCoop(on)
       if registryWorks() then takeBuddy() else log("режим второго игрока недоступен — управляю через ИИ") end
     end
     toast("Игрок 2 подключён: " .. heroName(S.buddy))
+    S.audioProbe = { S.frames + 1, S.frames + 120, S.frames + 360 }
     if CFG.device == "gamepad" and not CFG.p2_controller_confirmed then S.detectPending = true end
   else
     S.coop, S.resumeCoop, S.drag, S.cbox = false, false, nil, nil
@@ -3841,6 +3850,7 @@ local function Tick()
   -- снимаем — кроме сценок, которые нельзя прерывать.
   if S.frames % 15 == 0 then keepListener() end
   if S.frames % 120 == 60 then pcall(S.ambienceTick) end
+  if S.coop and S.frames % 300 == 150 then S.audioProbeQuiet = true; S.audioProbe = S.audioProbe or {}; table.insert(S.audioProbe, S.frames) end
   if S.audioProbe and S.coop then pcall(S.audioProbeTick) end
   if S.frames % 120 == 30 then pcall(S.keepAnimating) end
 
@@ -3927,4 +3937,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.9.1 загружен. F9 — меню кооператива")
+log("v9.9.2 загружен. F9 — меню кооператива")
