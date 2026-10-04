@@ -1,4 +1,4 @@
--- LN3Couch v9.8.2 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.8.3 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -70,6 +70,9 @@ local function saveSettings()
   f:write("-- настройки LN3Couch, сохранены из меню игры\nreturn " .. serialize(CFG) .. "\n"); f:close()
 end
 loadSettings()
+-- экран всегда делится автоматически (по комнатам и видимости); в меню
+-- выбирается только вид разделения: авто или всегда сверху/снизу
+CFG.split = "auto"
 if CFG.keyboard and not CFG.keyboard.throw then CFG.keyboard.throw = "Period" end
 if CFG.gamepad and not CFG.gamepad.throw then CFG.gamepad.throw = "Gamepad_RightShoulder" end
 if CFG.gamepad and not CFG.gamepad.weapon then
@@ -3133,19 +3136,13 @@ local function mainMenu()
         act = function() CFG.gamepad_goes_to_player2 = not CFG.gamepad_goes_to_player2; changed(); applyGamepadRouting() end,
         left = function() CFG.gamepad_goes_to_player2 = not CFG.gamepad_goes_to_player2; changed(); applyGamepadRouting() end,
         right = function() CFG.gamepad_goes_to_player2 = not CFG.gamepad_goes_to_player2; changed(); applyGamepadRouting() end },
-      { label = function() return "Экран" end, value = function() return optTitle(SPLIT_MODES, CFG.split) end,
-        left = function() CFG.split = optCycle(SPLIT_MODES, CFG.split, -1); changed() end,
-        right = function() CFG.split = optCycle(SPLIT_MODES, CFG.split, 1); changed() end },
       { label = function() return "Разделение" end, value = function() return optTitle(S.SPLIT_SIDES, CFG.split_sides or "auto") end,
         left = function() CFG.split_sides = optCycle(S.SPLIT_SIDES, CFG.split_sides or "auto", -1); changed() end,
         right = function() CFG.split_sides = optCycle(S.SPLIT_SIDES, CFG.split_sides or "auto", 1); changed() end },
-      { label = function() return "Делить экран с расстояния" end, value = function() return string.format("%d м", math.floor(CFG.split_on_distance / 100 + 0.5)) end,
-        left = function() CFG.split_on_distance = math.max(300, CFG.split_on_distance - 100); changed() end,
-        right = function() CFG.split_on_distance = math.min(3000, CFG.split_on_distance + 100); changed() end },
       { label = function() return "Кнопки игрока 2  >" end, value = function() return "" end,
         act = function() S.menu, S.sel = buildMenu("keys"), 1 end },
       { label = function() return "Сбросить настройки" end, value = function() return "" end,
-        act = function() CFG = deepcopy(DEFAULTS); applyLayout(); changed(); toast("Настройки сброшены") end },
+        act = function() CFG = deepcopy(DEFAULTS); CFG.split = "auto"; applyLayout(); changed(); toast("Настройки сброшены") end },
       { label = function() return "Закрыть  (F9)" end, value = function() return "" end, act = function() S.menuOpen = false end },
     },
   }
@@ -3400,14 +3397,10 @@ local function coopItems()
     { function() return "Геймпад №1 у: " .. (CFG.gamepad_goes_to_player2 and "игрока 2" or "игрока 1") end,
       function() CFG.gamepad_goes_to_player2 = not CFG.gamepad_goes_to_player2; saveSettings(); applyGamepadRouting() end },
     { function() return "Найти геймпад игрока 2" end, function() S.detectPending = true; toast("Закройте паузу и нажимайте A на геймпаде игрока 2") end },
-    { function() return "Экран: " .. optTitle(SPLIT_MODES, CFG.split) end,
-      function() CFG.split = optCycle(SPLIT_MODES, CFG.split, 1); saveSettings() end },
     { function() return "Разделение: " .. optTitle(S.SPLIT_SIDES, CFG.split_sides or "auto") end,
       function() CFG.split_sides = optCycle(S.SPLIT_SIDES, CFG.split_sides or "auto", 1); saveSettings() end },
-    { function() return string.format("Делить экран с: %d м", math.floor(CFG.split_on_distance / 100 + 0.5)) end,
-      function() CFG.split_on_distance = CFG.split_on_distance + 300; if CFG.split_on_distance > 3000 then CFG.split_on_distance = 300 end; saveSettings() end },
     { function() return "Кнопки игрока 2" end, function() showPage("keys") end },
-    { function() return "Сбросить настройки" end, function() CFG = deepcopy(DEFAULTS); applyLayout(); saveSettings(); PM.rebuildKeys = true end },
+    { function() return "Сбросить настройки" end, function() CFG = deepcopy(DEFAULTS); CFG.split = "auto"; applyLayout(); saveSettings(); PM.rebuildKeys = true end },
     { function() return "Назад" end, function() showPage(nil) end },
   }
 end
@@ -3911,4 +3904,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.8.2 загружен. F9 — меню кооператива")
+log("v9.8.3 загружен. F9 — меню кооператива")
