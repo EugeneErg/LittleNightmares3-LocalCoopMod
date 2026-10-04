@@ -1,4 +1,4 @@
--- LN3Couch v9.11.13 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.11.14 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -2336,7 +2336,15 @@ end
 S.boostPendingTick = function()
   local pb = S.pendingBoost; if not pb then return end
   -- ждём, пока вещь не только «убрана», но и спрятана игрой на пояс
-  local stashed = S.p1HeldItem() == nil and #S.p1UnhiddenItems() == 0
+  local unhidden = S.p1UnhiddenItems()
+  -- одно «убрать» гасит фонарик, но на пояс его прячет только второе (как
+  -- при нажатии кнопки игроком) — повторяем, пока не спрячется
+  if S.p1HeldItem() == nil and #unhidden > 0 and (pb.releases or 0) < 3 and S.frames - (pb.lastRelease or pb.at) > 30 then
+    pb.releases = (pb.releases or 0) + 1; pb.lastRelease = S.frames
+    local ok, e = S.itemCall(unhidden[1], "ReleaseItem")
+    trail(string.format("подсадка: вещь ещё не спрятана — убираю ещё раз (%d, %s)", pb.releases, ok and "ок" or tostring(e)))
+  end
+  local stashed = S.p1HeldItem() == nil and #unhidden == 0
   if stashed and not pb.stashedAt then pb.stashedAt = S.frames end
   if (stashed and S.frames - pb.stashedAt >= 10) or S.frames - pb.at > 180 then
     S.pendingBoost = nil
@@ -4442,4 +4450,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.11.13 загружен. F9 — меню кооператива")
+log("v9.11.14 загружен. F9 — меню кооператива")
