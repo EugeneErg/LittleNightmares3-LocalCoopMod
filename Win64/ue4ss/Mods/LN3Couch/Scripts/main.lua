@@ -1,4 +1,4 @@
--- LN3Couch v9.11.17 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.11.18 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -2245,7 +2245,7 @@ S.installInvTrace = function()
                   if valid(ow) then S.heldItem[ow:GetFullName()] = (fname == "OnWeaponTakeOut") and it or nil; S.heldItemKnown[ow:GetFullName()] = true end
                   -- вещи, которые прячутся, когда их убирают (а не висят на виду)
                   S.toolSeenOut = S.toolSeenOut or {}
-                  if fname == "OnWeaponTakeOut" then S.toolSeenOut[it:GetFullName()] = true end
+                  if fname == "OnWeaponTakeOut" then S.toolSeenOut[it:GetFullName()] = true; S.wantGATrace = true end
                 end)
               end
               if CFG.inv_trace == false then return end
@@ -2357,6 +2357,42 @@ S.finishStash = function(item, hero, attempt)
   local hid = "?"; pcall(function() hid = tostring(item.bHidden) end)
   trail(string.format("подсадка: довожу уборку %s (%d): %s → скрыта=%s", cname(item), attempt or 0, table.concat(res, ", "), hid))
 end
+-- «Нажать кнопку» за игрока: событие способности OnPress_<GUID>(TimeWaited)
+S.gaPress = function(ga)
+  local fn = nil
+  pcall(function()
+    ga:GetClass():ForEachFunction(function(f)
+      local n = f:GetFName():ToString()
+      if not fn and n:find("^OnPress_") then fn = n end
+    end)
+  end)
+  if not fn then return false, "нет OnPress" end
+  local ok, e = pcall(function() ga[fn](ga, 0.0) end)
+  return ok, ok and fn or e
+end
+-- Разбор: какие функции способности вызываются при нажатии кнопки
+S.traceEquipAbility = function(ga)
+  if S.gaTraced or CFG.inv_trace == false then return end
+  S.gaTraced = true
+  pcall(function()
+    ga:GetClass():ForEachFunction(function(f)
+      pcall(function()
+        local n = f:GetFName():ToString()
+        if n:find("Ubergraph") then return end
+        local full = f:GetFullName():gsub("^Function ", "")
+        RegisterHook(full, function(ctx, ...)
+          local parts = {}
+          for _, prm in ipairs({ ... }) do
+            local okg, v = pcall(function() return prm:get() end)
+            local d = okg and S.audioTraceArg(v) or nil
+            if d and #parts < 4 then parts[#parts + 1] = d end
+          end
+          trail("способность: GA_EquipTool." .. n .. (#parts > 0 and (" (" .. table.concat(parts, ", ") .. ")") or ""))
+        end)
+      end)
+    end)
+  end)
+end
 -- Активная способность «экипировать вещь» героя игрока 1 (пока вещь в руках)
 S.p1EquipAbility = function()
   local found = nil
@@ -2378,6 +2414,21 @@ S.boostPendingTick = function()
   local unhidden = S.p1UnhiddenItems()
   local gaActive = false
   if pb.ga then pcall(function() gaActive = valid(pb.ga) and pb.ga.bIsActive == true end) end
+  -- нажатие не помогло за ~0,7 с — просим убрать вещь «на сервере»
+  -- (в сетевой игре кнопка уходит туда; там вызывается UseItem(false, true))
+  if pb.ga and gaActive and not pb.serverPut and S.frames - pb.at > 40 then
+    pb.serverPut = true
+    local ok, e = pcall(function() pb.ga:Server_PutAway() end)
+    trail("подсадка: способность ещё держит вещь — Server_PutAway (" .. (ok and "ок" or tostring(e)) .. ")")
+  end
+  if pb.ga and gaActive and not pb.forced and S.frames - pb.at > 90 then
+    pb.forced = true
+    local item = S.p1HeldItem() or (S.p1UnhiddenItems())[1]
+    if valid(item) then
+      local ok, e = S.itemCall(item, "Multicast_UseItem", { false, true })
+      trail("подсадка: способность всё ещё держит вещь — Multicast_UseItem(false, true) (" .. (ok and "ок" or tostring(e)) .. ")")
+    end
+  end
   if pb.ga and not gaActive and not pb.gaEndedAt then
     pb.gaEndedAt = S.frames
     trail(string.format("подсадка: способность «вещь в руках» закончилась через %.1f с", (S.frames - pb.at) / 60))
@@ -2952,6 +3003,10 @@ S.boostInput = function()
     S.boostCooldown = S.frames + 60
     return
   end
+  if S.wantGATrace and not S.gaTraced then
+    S.wantGATrace = nil
+    pcall(function() local g = S.p1EquipAbility(); if g then S.traceEquipAbility(g) end end)
+  end
   if S.boost then S.boostTick(e1, e2) return end
   if S.pendingBoost then pcall(S.boostPendingTick); return end
   if S.boostCooldown and S.frames < S.boostCooldown then return end
@@ -2970,8 +3025,12 @@ S.boostInput = function()
       -- Если убрать вещь мимо способности (ReleaseItem), способность
       -- остаётся активной, и при передаче героя ИИ игра её обрывает и
       -- «роняет» вещь — потом при попытке достать фонарик игра падает.
-      local ok, e = pcall(function() ga:PutAway() end)
-      trail("подсадка: у Low в руках вещь — убираю как кнопкой (PutAway: " .. (ok and "ок" or tostring(e)) .. ")")
+      S.traceEquipAbility(ga)
+      -- нажатие кнопки способность получает через своё событие OnPress_…
+      -- (его вызывает задача «ждать нажатия»). Вызываем его сами — это и есть
+      -- нажатие кнопки, со всеми шагами, которые игра делает дальше.
+      local ok, e = S.gaPress(ga)
+      trail("подсадка: у Low в руках вещь — нажимаю за игрока «убрать» (" .. (ok and "ок" or tostring(e)) .. ")")
       S.pendingBoost = { hero = S.p1, owner = S.pc1, spot = spot, at = S.frames, ga = ga }
     elseif spot and (item or #S.p1UnhiddenItems() > 0) then
       local gl = {}
@@ -4504,4 +4563,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.11.17 загружен. F9 — меню кооператива")
+log("v9.11.18 загружен. F9 — меню кооператива")
