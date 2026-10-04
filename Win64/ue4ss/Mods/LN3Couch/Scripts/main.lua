@@ -1,4 +1,4 @@
--- LN3Couch v9.10.2 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.11 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -512,6 +512,13 @@ local function pickRoomCam(p)
   end
   return best
 end
+-- Стоит ли точка p в зоне комнатной камеры a
+S.inRoomVol = function(a, p)
+  local pv = a.mEditablePlayerVolume; if not valid(pv) then return false end
+  local c, yaw, e = boxInfo(pv)
+  local lx, ly, lz = toLocal(c, yaw, p)
+  return math.abs(lx) <= e.X and math.abs(ly) <= e.Y and math.abs(lz) <= e.Z
+end
 local function roomCamPose(a, p)
   local cc = a.mCameraComponent
   local pc, pyaw, pe = boxInfo(a.mEditablePlayerVolume)
@@ -556,6 +563,16 @@ local function roomCamTarget()
   if CFG.room_camera == false then return nil end
   local okp, p = pcall(function() return S.buddy:K2_GetActorLocation() end)
   if not okp then return nil end
+  -- особый план предмета (колесо и т.п.) — показываем его как есть, без
+  -- подстройки под положение героя: камера стоит там, где её поставили художники
+  if valid(S.cam2External) then
+    local ok, loc, rot, fov = pcall(function()
+      local cc = S.cam2External.mCameraComponent
+      if not valid(cc) then cc = S.cam2External:GetComponentByClass(StaticFindObject("/Script/Engine.CameraComponent")) end
+      return cc:K2_GetComponentLocation(), cc:K2_GetComponentRotation(), cc.FieldOfView
+    end)
+    if ok and loc then return loc, rot, fov end
+  end
   if S.frames >= RC.pickAt then
     RC.pickAt = S.frames + 10
     local a = pickRoomCam(p)
@@ -734,7 +751,8 @@ end
 -- Виден ли напарник в кадре игрока 1 (доли экрана 0..1), nil — если не удалось посчитать
 local projLogged = false
 local VIS_LIB = nil
-local function buddyScreenPos()
+local function buddyScreenPos(hero)
+  hero = hero or S.buddy
   local ok, res = pcall(function()
     if not valid(VIS_LIB) then VIS_LIB = StaticFindObject("/Script/UMG.Default__WidgetLayoutLibrary") end
     local lib = VIS_LIB
@@ -744,12 +762,12 @@ local function buddyScreenPos()
     if S.split then
       if S.layoutLR() then W = W / 2 else H = H / 2 end
     end
-    local loc = S.buddy:K2_GetActorLocation()
+    local loc = hero:K2_GetActorLocation()
     local out = {}
     local onScr = S.pc1:ProjectWorldLocationToScreen({ X = loc.X, Y = loc.Y, Z = loc.Z }, out, true)
     local x = out.X or (out[1] and out[1].X)
     local y = out.Y or (out[1] and out[1].Y)
-    if not projLogged then projLogged = true; log("проверка видимости: экран %dx%d, напарник %s (%s, %s)", W, H, tostring(onScr), tostring(x), tostring(y)) end
+    if not projLogged and hero == S.buddy then projLogged = true; log("проверка видимости: экран %dx%d, напарник %s (%s, %s)", W, H, tostring(onScr), tostring(x), tostring(y)) end
     if not onScr or not x or not y then return { inFront = false } end
     return { inFront = true, x = x / W, y = y / H }
   end)
@@ -781,11 +799,18 @@ local function wantSplit()
       -- Половинка экрана шире обычного кадра, и в неё напарник «влезает» раньше,
       -- чем влезет в целый экран. Пересчитываем положение так, как оно будет
       -- в целом кадре (берём худший случай), и объединяем только если он там уверенно.
-      local q = p
-      if p and p.inFront then
-        if S.layoutLR() then q = { inFront = true, x = p.x, y = 0.5 + (p.y - 0.5) * 2 }
-        else q = { inFront = true, x = 0.5 + (p.x - 0.5) * 2, y = p.y } end
+      local function full(pp)
+        if not (pp and pp.inFront) then return pp end
+        -- слева/справа половина держит ширину целого кадра, а по высоте видит
+        -- вдвое больше; сверху/снизу — наоборот
+        if S.layoutLR() then return { inFront = true, x = pp.x, y = 0.5 + (pp.y - 0.5) * 2 }
+        else return { inFront = true, x = 0.5 + (pp.x - 0.5) * 2, y = pp.y } end
       end
+      local q = full(p)
+      -- игра может развернуть камеру игрока 1 к напарнику (колесо, рычаг): тогда
+      -- напарник в кадре, а сам игрок 1 — нет. Объединяем, только если в кадре оба.
+      local q1 = full(buddyScreenPos(S.p1))
+      local p1In = q1 == nil or insideBox(q1, 0.05)
       -- объединяем, когда герои в одной комнате и напарник уверенно в кадре,
       -- или когда они просто стоят рядом (тогда комнаты не важны)
       local close, dh, dz = false, 99999, 0
@@ -796,6 +821,7 @@ local function wantSplit()
       end)
       -- в разных комнатах экран всегда разделён, как бы близко герои ни стояли
       if diffRooms or (VIS.sameFor or 0) < 20 then VIS.shownFor = 0
+      elseif not p1In then VIS.shownFor = 0
       elseif close then VIS.shownFor = VIS.shownFor + 2
       elseif insideBox(q, 0.05) then VIS.shownFor = VIS.shownFor + 1
       else VIS.shownFor = math.max(0, VIS.shownFor - 2) end     -- короткие «выпадения» не сбрасывают счёт
@@ -807,7 +833,9 @@ local function wantSplit()
       if now() - S.splitChangedAt < 1.0 then return true end   -- разделённым держим минимум 1 с
       return VIS.shownFor < 15           -- ~0,25 с
     else
-      if insideBox(p, 0.04) then VIS.hiddenFor = 0 else VIS.hiddenFor = VIS.hiddenFor + 1 end
+      local p1 = buddyScreenPos(S.p1)
+      local p1Out = p1 ~= nil and not insideBox(p1, 0.0)
+      if insideBox(p, 0.04) and not p1Out then VIS.hiddenFor = 0 else VIS.hiddenFor = VIS.hiddenFor + 1 end
       -- делим, если напарник ушёл из кадра или в другую комнату
       return VIS.hiddenFor >= 20 or VIS.diffFor >= 20
     end
@@ -975,7 +1003,8 @@ local function updateSplit()
     end
   end
   VIS.hiddenFor, VIS.shownFor = 0, 0
-  if want then pcall(S.decideSplitSides); pcall(S.setPlayerOrder, S.p2First) end
+  -- каждый игрок — на своей половине (выключается split_swap_sides = false)
+  if want then pcall(S.decideSplitSides); if CFG.split_swap_sides ~= false then pcall(S.setPlayerOrder, S.p2First) end end
   setSplitVisible(want)
   pcall(S.applySplitAspect, want)
   if not want then S.splitLR, S.p2First = nil, false end
@@ -1484,6 +1513,50 @@ S.audioProbeTick = function()
   S.audioProbeLast = line
   trail(string.format("звук (%s): %s", S.split and "разделён" or "общий", line))
 end
+-- Звук: после подключения второго игрока весь звук иногда молчит до первой
+-- смерти — его чинит возрождение героев. Вызываем возрождение игры один раз
+-- сразу после подключения (без смерти). Параметры функции подбираем по их
+-- типам, т.к. заранее их не знаем.
+-- Вызов функции игры, параметры которой заранее не известны: подставляем
+-- значения по типам (объект — герой игрока 1, число — 0, флаг — false...).
+S.callGameFn = function(obj, fnPath, fnName)
+  local args, desc = {}, {}
+  pcall(function()
+    StaticFindObject(fnPath):ForEachProperty(function(pr)
+      local n = pr:GetFName():ToString()
+      if n == "ReturnValue" then return end
+      local cn = ""; pcall(function() cn = pr:GetClass():GetFName():ToString() end)
+      local v
+      if cn == "BoolProperty" then v = false
+      elseif cn:find("Int") or cn == "FloatProperty" or cn == "DoubleProperty" or cn == "ByteProperty" or cn == "EnumProperty" then v = 0
+      elseif cn == "StrProperty" then v = ""
+      elseif cn == "NameProperty" then v = FName("None")
+      elseif cn == "StructProperty" then v = {}
+      elseif cn:find("Object") then v = S.p1 end
+      args[#args + 1] = v
+      desc[#desc + 1] = n .. ":" .. cn
+    end)
+  end)
+  local ok, e = pcall(function() obj[fnName](obj, table.unpack(args, 1, #desc)) end)
+  return ok, e, table.concat(desc, ", ")
+end
+-- Звук: при подключении второго игрока весь звук иногда молчит до первой
+-- смерти. Чинить его так же, как смерть: сразу после подключения игрок 1
+-- погибает и возрождается на контрольной точке (после загрузки сохранения
+-- герои и так на ней). Выключается audio_kill = false.
+-- Звук: контроллер игрока при появлении приглушает весь звук игры (так
+-- игра делает при смерти и загрузке, а потом возвращает его). Новый
+-- контроллер игрока 2 звук приглушает, а вернуть его некому — до первой
+-- смерти, когда игра сама вызывает «вернуть звук». Вызываем это сами.
+S.fadeInAudio = function(why)
+  if CFG.audio_fadein == false then return end
+  for i, pc in ipairs({ S.pc1 }) do
+    if valid(pc) then
+      local ok, e, d = S.callGameFn(pc, "/Script/Kosmos.KosmosPlayerController:FadeInAudio", "FadeInAudio")
+      trail(string.format("звук: вернул звук через контроллер игрока %d (%s) [%s] — %s", i, why or "", d, ok and "сделано" or ("ошибка: " .. tostring(e))))
+    end
+  end
+end
 local function keepListener()
   if not valid(AUDIO.owner) then return end
   local o = listenerOwner()
@@ -1492,6 +1565,10 @@ local function keepListener()
     if valid(lib) then
       try("RegisterDefaultListener", function() lib:RegisterDefaultListener(S.pc1, AUDIO.owner) end)
       S.lastListenerFix = now()
+      if ExecuteWithDelay and not S.audioRespawnDone then
+        S.audioRespawnDone = true
+        ExecuteWithDelay(1500, function() ExecuteInGameThread(function() pcall(S.fadeInAudio, "после подключения") end) end)
+      end
       if not AUDIO.logged then AUDIO.logged = true; log("звук: игра переключила слушателя на %s — вернул на %s", cname(o), cname(AUDIO.owner)) end
       if ExecuteWithDelay then
         ExecuteWithDelay(300, function() ExecuteInGameThread(function() pcall(refreshAmbience) end) end)
@@ -1598,11 +1675,13 @@ local function setCoop(on)
     S.enemy.listAt, S.enemy.killAt, S.enemy.bbAt, S.enemy.st, S.enemy.pos = -10000, -10000, {}, {}, {}
     if not acquire() then toast("Не нашёл двух героев — загрузите игру"); return end
     S.coop, S.split = true, false
+    S.audioRespawnDone = false
     S.lastBuddyLoc, S.camFrozenAt = nil, nil   -- место героя с прошлого уровня не годится
     -- запоминаем мир, в котором включились: иначе проверка смены уровня,
     -- не успевшая заметить загрузку, сразу же приостановит кооператив
     pcall(function() S.worldName = UEHelpers.GetWorld():GetFullName() end)
     rememberListener()
+    pcall(S.hookExternalCam)
     S.ambBase = S.ambienceState()
     if S.ambBase then trail(string.format("звук до кооператива: фон зоны=%s, общий фон=%s", tostring(S.ambBase.v), tostring(S.ambBase.g))) end
     ensurePC2()
@@ -4014,4 +4093,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.10.2 загружен. F9 — меню кооператива")
+log("v9.11 загружен. F9 — меню кооператива")
