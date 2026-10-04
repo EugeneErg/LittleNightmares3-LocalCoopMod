@@ -1,4 +1,4 @@
--- LN3Couch v9.11.3 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.11.4 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -7,7 +7,12 @@ local UEHelpers = require("UEHelpers")
 -- после вылета было видно, что мод делал последним
 local TRAIL = { f = nil, n = 0 }
 local function trail(line)
-  if not TRAIL.f then TRAIL.f = io.open("ue4ss/Mods/LN3Couch/trail.txt", "w") end
+  if not TRAIL.f then
+    -- запись прошлого запуска сохраняем в trail_prev.txt (после вылета её
+    -- иначе затирает следующий запуск)
+    pcall(function() os.remove("ue4ss/Mods/LN3Couch/trail_prev.txt"); os.rename("ue4ss/Mods/LN3Couch/trail.txt", "ue4ss/Mods/LN3Couch/trail_prev.txt") end)
+    TRAIL.f = io.open("ue4ss/Mods/LN3Couch/trail.txt", "w")
+  end
   if not TRAIL.f then return end
   TRAIL.n = TRAIL.n + 1
   if TRAIL.n > 40000 then TRAIL.f:close(); TRAIL.f = io.open("ue4ss/Mods/LN3Couch/trail.txt", "w"); TRAIL.n = 0; if not TRAIL.f then return end end
@@ -4162,4 +4167,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.11.3 загружен. F9 — меню кооператива")
+log("v9.11.4 загружен. F9 — меню кооператива")
