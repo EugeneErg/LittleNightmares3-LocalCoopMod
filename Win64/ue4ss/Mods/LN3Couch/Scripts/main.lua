@@ -1,4 +1,4 @@
--- LN3Couch v9.10.8 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.10.9 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -1719,6 +1719,7 @@ local function setCoop(on)
     -- не успевшая заметить загрузку, сразу же приостановит кооператив
     pcall(function() S.worldName = UEHelpers.GetWorld():GetFullName() end)
     rememberListener()
+    pcall(S.dumpAudioFns)
     S.ambBase = S.ambienceState()
     if S.ambBase then trail(string.format("звук до кооператива: фон зоны=%s, общий фон=%s", tostring(S.ambBase.v), tostring(S.ambBase.g))) end
     ensurePC2()
@@ -2728,6 +2729,39 @@ S.dumpProps = function(obj, label)
     cls = ok and sup or nil; depth = depth + 1
   end
   trail("поля " .. label .. ": " .. table.concat(out, "; "))
+end
+-- Разовый разбор звука: какие функции про «уши»/звук есть у контроллера,
+-- камеры и звукового менеджера игры (ищем, чем игра сама ставит «уши» при
+-- возрождении).
+S.dumpAudioFns = function()
+  if S.audioFnsDumped then return end
+  S.audioFnsDumped = true
+  local seen, out = {}, {}
+  local function scan(cls)
+    local depth = 0
+    while valid(cls) and depth < 8 do
+      local cn = ""; pcall(function() cn = cls:GetFName():ToString() end)
+      if seen[cn] or cn == "Actor" or cn == "Object" or cn == "ActorComponent" then break end
+      seen[cn] = true
+      pcall(function()
+        cls:ForEachFunction(function(f)
+          local fn = ""; pcall(function() fn = f:GetFName():ToString() end)
+          local l = fn:lower()
+          if l:find("listen") or l:find("audio") or l:find("sound") or l:find("^ak") or l:find("ears") or l:find("mix") then
+            out[#out + 1] = cn .. ":" .. fn
+          end
+        end)
+      end)
+      local ok, sup = pcall(function() return cls:GetSuperStruct() end)
+      cls = ok and sup or nil
+      depth = depth + 1
+    end
+  end
+  for _, o in ipairs({ S.pc1, S.pc1.PlayerCameraManager, audioMgr(), S.p1 }) do
+    pcall(function() if valid(o) then scan(o:GetClass()) end end)
+  end
+  pcall(function() scan(StaticFindObject("/Script/Kosmos.KosmosAudioBlueprintLibrary")) end)
+  trail("функции звука/ушей: " .. table.concat(out, ", "))
 end
 S.logCam1Pull = function()
   if not S.camPropsDumped then
@@ -4224,4 +4258,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.10.8 загружен. F9 — меню кооператива")
+log("v9.10.9 загружен. F9 — меню кооператива")
