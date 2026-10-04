@@ -1,4 +1,4 @@
--- LN3Couch v9.8 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.8.1 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -1176,7 +1176,8 @@ S.harvestWords = function()
   local changed = false
   for _, tb in ipairs(FindAllOf("TextBlock") or {}) do
     if valid(tb) then
-      local path = wid(tb):gsub("_%d%d%d%d+", "")
+      local okn, full = pcall(function() return tb:GetFullName() end)
+      local path = (okn and full or ""):gsub("_%d%d%d%d+", "")
       for k, pat in pairs(S.GAME_WORDS) do
         if not gw.w[k] and path:find(pat) then
           local t = S.uiText(tb)
@@ -1490,6 +1491,9 @@ local function setCoop(on)
     S.enemy.listAt, S.enemy.killAt, S.enemy.bbAt, S.enemy.st, S.enemy.pos = -10000, -10000, {}, {}, {}
     if not acquire() then toast("Не нашёл двух героев — загрузите игру"); return end
     S.coop, S.split = true, false
+    -- запоминаем мир, в котором включились: иначе проверка смены уровня,
+    -- не успевшая заметить загрузку, сразу же приостановит кооператив
+    pcall(function() S.worldName = UEHelpers.GetWorld():GetFullName() end)
     rememberListener()
     S.ambBase = S.ambienceState()
     if S.ambBase then trail(string.format("звук до кооператива: фон зоны=%s, общий фон=%s", tostring(S.ambBase.v), tostring(S.ambBase.g))) end
@@ -3902,4 +3906,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.8 загружен. F9 — меню кооператива")
+log("v9.8.1 загружен. F9 — меню кооператива")
