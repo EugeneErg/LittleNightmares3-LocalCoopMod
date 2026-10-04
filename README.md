@@ -112,7 +112,7 @@ Tested on the Steam version of Little Nightmares III, October 2026. A game updat
 - **The game does not start or the UE4SS window does not appear.** Check that `dwmapi.dll` and `ue4ss` are directly inside `Win64`, not in `Win64\Win64`.
 - **No Co-op item in the menu.** It appears in the main menu and the pause menu a moment after they open. F9 also works.
 - **The wrong gamepad controls Player 2.** In the Co-op menu, run gamepad detection and press A on Player 2's controller, or switch "Gamepad #1 belongs to".
-- **Something broke.** Please attach `ue4ss\UE4SS.log`, `ue4ss\Mods\LN3Couch\trail.txt` and, after a crash, the newest folder from `%LOCALAPPDATA%\LittleNightmaresIII\Saved\Crashes`.
+- **Something broke.** Please attach `ue4ss\UE4SS.log`, `ue4ss\Mods\LN3Couch\trail.txt`, `trail_prev.txt` (the previous launch) and, after a crash, the newest folder from `%LOCALAPPDATA%\LittleNightmaresIII\Saved\Crashes`.
 
 ## Reporting bugs
 

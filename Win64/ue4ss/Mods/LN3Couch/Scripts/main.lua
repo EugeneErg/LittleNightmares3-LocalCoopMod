@@ -1,4 +1,4 @@
--- LN3Couch v9.11 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.11.4 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -7,7 +7,12 @@ local UEHelpers = require("UEHelpers")
 -- после вылета было видно, что мод делал последним
 local TRAIL = { f = nil, n = 0 }
 local function trail(line)
-  if not TRAIL.f then TRAIL.f = io.open("ue4ss/Mods/LN3Couch/trail.txt", "w") end
+  if not TRAIL.f then
+    -- запись прошлого запуска сохраняем в trail_prev.txt (после вылета её
+    -- иначе затирает следующий запуск)
+    pcall(function() os.remove("ue4ss/Mods/LN3Couch/trail_prev.txt"); os.rename("ue4ss/Mods/LN3Couch/trail.txt", "ue4ss/Mods/LN3Couch/trail_prev.txt") end)
+    TRAIL.f = io.open("ue4ss/Mods/LN3Couch/trail.txt", "w")
+  end
   if not TRAIL.f then return end
   TRAIL.n = TRAIL.n + 1
   if TRAIL.n > 40000 then TRAIL.f:close(); TRAIL.f = io.open("ue4ss/Mods/LN3Couch/trail.txt", "w"); TRAIL.n = 0; if not TRAIL.f then return end end
@@ -1676,6 +1681,9 @@ local function setCoop(on)
     if not acquire() then toast("Не нашёл двух героев — загрузите игру"); return end
     S.coop, S.split = true, false
     S.audioRespawnDone = false
+    pcall(function() if valid(S.ai) and valid(S.buddy) then S.ai.mCurrentCharacter = S.buddy end end)
+    S.itemOwners = {}
+    pcall(S.snapshotItemOwners, "кооператив включён")
     S.lastBuddyLoc, S.camFrozenAt = nil, nil   -- место героя с прошлого уровня не годится
     -- запоминаем мир, в котором включились: иначе проверка смены уровня,
     -- не успевшая заметить загрузку, сразу же приостановит кооператив
@@ -2160,10 +2168,52 @@ S.boostPassThrough = function(on)
     end
   end)
 end
+-- Вещи героев (лук, ключ, фонарик…) — отдельные «актёры», у которых есть
+-- владелец. Когда на время подсадки героя игрока 1 ведёт ИИ, игра при
+-- возврате героя оставляла вещь без владельца, и при следующем «достать
+-- вещь» игра падала (обращалась к месту владельца, которого нет). Запоминаем
+-- владельцев вещей и возвращаем, если игра их потеряла.
+S.itemOwners = S.itemOwners or {}
+S.snapshotItemOwners = function(why)
+  local n = 0
+  for _, o in ipairs({ S.p1, S.buddy, S.pc1, S.pc2, S.ai }) do
+    if valid(o) then
+      pcall(function()
+        o.Children:ForEach(function(_, el)
+          local a = el:get()
+          local isCarry = false
+          pcall(function() local cc = carriableClass(); isCarry = valid(cc) and a:IsA(cc) end)
+          if valid(a) and not isCarry then
+            local key = a:GetFullName()
+            if not S.itemOwners[key] then n = n + 1 end
+            S.itemOwners[key] = { a = a, owner = o }
+          end
+        end)
+      end)
+    end
+  end
+  if n > 0 then trail(string.format("вещи героев: запомнил владельцев ещё у %d (%s)", n, why or "")) end
+end
+S.fixItemOwners = function(why)
+  local fixed = {}
+  for key, rec in pairs(S.itemOwners) do
+    if not valid(rec.a) then S.itemOwners[key] = nil
+    else
+      local cur = nil; pcall(function() cur = rec.a.Owner end)
+      if not valid(cur) and valid(rec.owner) then
+        pcall(function() rec.a:SetOwner(rec.owner) end)
+        fixed[#fixed + 1] = cname(rec.a) .. " → " .. cname(rec.owner)
+      end
+    end
+  end
+  if #fixed > 0 then trail("вещи героев: вернул владельцев (" .. (why or "") .. "): " .. table.concat(fixed, ", ")) end
+end
 S.boostEnd = function(reason)
   local b = S.boost; if not b then return end
   S.boost = nil
-  S.boostCooldown = S.frames + 45   -- не переключать героя туда-обратно слишком часто
+  -- не переключать героя туда-обратно слишком часто; после совсем короткой
+  -- (сорвавшейся) подсадки ждём дольше
+  S.boostCooldown = S.frames + ((b.startFrame and S.frames - b.startFrame < 90) and 180 or 45)
   pcall(S.boostPassThrough, false)
   try("boost stop", function() S.ai:StopAllAICommands() end)
   try("ai tick off", function() S.ai:SetActorTickEnabled(false) end)
@@ -2176,6 +2226,16 @@ S.boostEnd = function(reason)
       S.cam1PawnHack, S.cam1PawnLost = false, nil
     end
     safePossess(b.owner, b.hero, "подсадка: герой → своему игроку")
+    -- ИИ-контроллер снова «помнит» напарника, а не героя игрока 1. Иначе игра
+    -- считает героя игрока 1 напарником ИИ и через пару секунд обращается к
+    -- ИИ без героя — игра падала после подсадки, которую делал игрок 1.
+    pcall(function()
+      local want = S.buddy   -- напарник ИИ — всегда герой игрока 2
+      if S.ai.mCurrentCharacter ~= want then
+        S.ai.mCurrentCharacter = want
+        trail("после подсадки: ИИ снова «помнит» " .. heroName(want))
+      end
+    end)
     if b.hero == S.p1 then
       pcall(function() trail(string.format("после подсадки: Low у %s, герой ИК1=%s", clsName(S.p1.Controller), clsName(S.pc1.Pawn))) end)
     end
@@ -2190,6 +2250,7 @@ S.boostEnd = function(reason)
       pcall(function() S.pc1:SetViewTargetWithBlend(S.p1, 0.25, 0, 0, false) end)
     end
   end
+  pcall(S.fixItemOwners, "после подсадки")
   log("подсадка закончилась (%s)", reason)
 end
 -- Камера игрока 1 «живёт» от его героя. Пока героя на время подсадки ведёт
@@ -2453,19 +2514,23 @@ S.boostStart = function(hero, owner, spot)
   pcall(function() trail("герои перед подсадкой: " .. S.killDiag()) end)
   if hero == S.p1 then pcall(S.freezeCam1, true) end
   pcall(dedupeRegistry, "перед подсадкой")
+  pcall(S.snapshotItemOwners, "перед подсадкой")
   try("ai tick on", function() S.ai:SetActorTickEnabled(true) end)
   if not safePossess(S.ai, hero, "подсадка: герой → ИИ") then
     try("ai tick off", function() S.ai:SetActorTickEnabled(false) end)
     return false
   end
   -- ИИ-контроллер запоминает «своего» героя; после смены героя обновляем
+  -- (а после подсадки возвращаем как было — см. S.boostEnd)
+  local prevChar = nil
+  pcall(function() prevChar = S.ai.mCurrentCharacter end)
   pcall(function() S.ai.mCurrentCharacter = hero end)
   if hero == S.buddy then S.real = false
   else
     -- камера игрока 1 замирает на месте на время подсадки
     pcall(S.applyCam1Freeze)
   end
-  S.boost = { hero = hero, owner = owner, spot = spot, startFrame = S.frames }
+  S.boost = { hero = hero, owner = owner, spot = spot, startFrame = S.frames, prevChar = prevChar }
   pcall(S.boostPassThrough, true)
   local ok, action = try("PlaypalBoost", function() return interactCmds():PlaypalBoost(hero, spot) end)
   if ok and valid(action) then
@@ -2487,6 +2552,9 @@ S.rbEdges = function()
   local r1, r2 = held(S.pc1), held(p2Source())
   local e1, e2 = r1 and not S.prevRB1, r2 and not S.prevRB2
   S.prevRB1, S.prevRB2 = r1, r2
+  -- сколько кадров курок держат (для начала подсадки)
+  S.rbHeld1 = r1 and (S.rbHeld1 or 0) + 1 or 0
+  S.rbHeld2 = r2 and (S.rbHeld2 or 0) + 1 or 0
   return e1, e2
 end
 S.boostTick = function(e1, e2)
@@ -2570,10 +2638,15 @@ S.boostInput = function()
   end
   if S.boost then S.boostTick(e1, e2) return end
   if S.boostCooldown and S.frames < S.boostCooldown then return end
-  if e1 then
+  -- подсадку начинаем, когда курок держат ~0,4 с, а не от любого нажатия:
+  -- короткие нажатия у места подсадки (схватить что-то, в погоне) раньше
+  -- то начинали, то сразу отменяли подсадку, и каждый раз героя забирали у
+  -- игрока и возвращали — в погоне это роняло игру
+  local HOLD = CFG.boost_hold_frames or 24
+  if S.rbHeld1 == HOLD then
     local spot = S.nearestBoostTo(S.p1)
     if spot then S.boostStart(S.p1, S.pc1, spot) end
-  elseif e2 then
+  elseif S.rbHeld2 == HOLD then
     local spot = S.nearestBoostTo(S.buddy)
     if spot then S.boostStart(S.buddy, S.pc2, spot) end
   end
@@ -4008,6 +4081,7 @@ local function Tick()
   if S.frames % 15 == 0 then keepListener() end
   if S.frames % 120 == 60 then pcall(S.ambienceTick) end
   if S.audioProbe and S.coop then pcall(S.audioProbeTick) end
+  if S.coop and not S.boost and S.frames % 30 == 20 then pcall(S.fixItemOwners, "проверка"); if S.frames % 600 == 20 then pcall(S.snapshotItemOwners, "обновление") end end
   if S.frames % 120 == 30 then pcall(S.keepAnimating) end
 
   if S.frames % 120 == 0 then pcall(dedupeRegistry, "проверка") end
@@ -4093,4 +4167,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.11 загружен. F9 — меню кооператива")
+log("v9.11.4 загружен. F9 — меню кооператива")
