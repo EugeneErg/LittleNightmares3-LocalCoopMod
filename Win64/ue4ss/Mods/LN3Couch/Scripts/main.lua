@@ -1,4 +1,4 @@
--- LN3Couch v9.8.1 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.8.2 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -3435,7 +3435,12 @@ local function buildPage(name)
   local list = {}
   for _, it in ipairs(items) do
     local e = { label = it[1] }
-    e.btn = makeBtn(PM.template, PM.widget, it[1](), function() it[2](); refreshLabels() end)
+    e.btn = makeBtn(PM.template, PM.widget, it[1](), function()
+      local before = ""; pcall(function() before = it[1]() end)
+      it[2](); refreshLabels()
+      local after = ""; pcall(function() after = it[1]() end)
+      trail(string.format("меню (%s): нажато «%s» → «%s»", PM.kind or "?", before, after))
+    end)
     local slot = PM.sb:AddChild(e.btn); copySlot(slot, PM.template)
     e.btn:SetVisibility(1)
     list[#list + 1] = e
@@ -3906,4 +3911,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.8.1 загружен. F9 — меню кооператива")
+log("v9.8.2 загружен. F9 — меню кооператива")
