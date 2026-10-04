@@ -1,4 +1,4 @@
--- LN3Couch v9.9.6 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.9.7 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -1475,6 +1475,26 @@ S.audioProbeTick = function()
   S.audioProbeLast = line
   trail(string.format("звук (%s): %s", S.split and "разделён" or "общий", line))
 end
+-- Когда появляется второй игрок, игра (в своём коде, мимо мода) переносит
+-- «уши» на его камеру, а потом мы возвращаем их игроку 1. «Уши» при этом
+-- создаются заново, а все уже звучащие источники (герои, фон, предметы)
+-- остаются привязаны к старым, удалённым «ушам» — и звук пропадает, пока
+-- после смерти игра не создаст героев заново. Поэтому сами привязываем все
+-- источники звука к нынешним «ушам» игрока 1.
+S.rebindListeners = function(why)
+  local m = audioMgr(); if not m then return end
+  local okl, lc = pcall(function() return m:GetDefaultListenerComponent() end)
+  if not (okl and valid(lc)) then trail("звук: нет «ушей» для привязки"); return end
+  local n, bad, err = 0, 0, nil
+  for _, c in ipairs(FindAllOf("AkComponent") or {}) do
+    if valid(c) and c ~= lc then
+      local ok, e = pcall(function() c:SetListeners({ lc }) end)
+      if ok then n = n + 1 else bad = bad + 1; err = err or tostring(e) end
+    end
+  end
+  trail(string.format("звук: привязал %d источников к «ушам» игрока 1 (%s)%s", n, why or "",
+    bad > 0 and string.format(", не вышло у %d: %s", bad, err) or ""))
+end
 local function keepListener()
   if not valid(AUDIO.owner) then return end
   local o = listenerOwner()
@@ -1483,6 +1503,9 @@ local function keepListener()
     if valid(lib) then
       try("RegisterDefaultListener", function() lib:RegisterDefaultListener(S.pc1, AUDIO.owner) end)
       S.lastListenerFix = now()
+      if ExecuteWithDelay then
+        ExecuteWithDelay(200, function() ExecuteInGameThread(function() pcall(S.rebindListeners, "после возврата «ушей»") end) end)
+      else pcall(S.rebindListeners, "после возврата «ушей»") end
       if not AUDIO.logged then AUDIO.logged = true; log("звук: игра переключила слушателя на %s — вернул на %s", cname(o), cname(AUDIO.owner)) end
       if ExecuteWithDelay then
         ExecuteWithDelay(300, function() ExecuteInGameThread(function() pcall(refreshAmbience) end) end)
@@ -4005,4 +4028,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.9.6 загружен. F9 — меню кооператива")
+log("v9.9.7 загружен. F9 — меню кооператива")
