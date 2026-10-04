@@ -1,4 +1,4 @@
--- LN3Couch v9.10.2 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.10.3 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -734,7 +734,8 @@ end
 -- Виден ли напарник в кадре игрока 1 (доли экрана 0..1), nil — если не удалось посчитать
 local projLogged = false
 local VIS_LIB = nil
-local function buddyScreenPos()
+local function buddyScreenPos(hero)
+  hero = hero or S.buddy
   local ok, res = pcall(function()
     if not valid(VIS_LIB) then VIS_LIB = StaticFindObject("/Script/UMG.Default__WidgetLayoutLibrary") end
     local lib = VIS_LIB
@@ -744,12 +745,12 @@ local function buddyScreenPos()
     if S.split then
       if S.layoutLR() then W = W / 2 else H = H / 2 end
     end
-    local loc = S.buddy:K2_GetActorLocation()
+    local loc = hero:K2_GetActorLocation()
     local out = {}
     local onScr = S.pc1:ProjectWorldLocationToScreen({ X = loc.X, Y = loc.Y, Z = loc.Z }, out, true)
     local x = out.X or (out[1] and out[1].X)
     local y = out.Y or (out[1] and out[1].Y)
-    if not projLogged then projLogged = true; log("проверка видимости: экран %dx%d, напарник %s (%s, %s)", W, H, tostring(onScr), tostring(x), tostring(y)) end
+    if not projLogged and hero == S.buddy then projLogged = true; log("проверка видимости: экран %dx%d, напарник %s (%s, %s)", W, H, tostring(onScr), tostring(x), tostring(y)) end
     if not onScr or not x or not y then return { inFront = false } end
     return { inFront = true, x = x / W, y = y / H }
   end)
@@ -781,11 +782,18 @@ local function wantSplit()
       -- Половинка экрана шире обычного кадра, и в неё напарник «влезает» раньше,
       -- чем влезет в целый экран. Пересчитываем положение так, как оно будет
       -- в целом кадре (берём худший случай), и объединяем только если он там уверенно.
-      local q = p
-      if p and p.inFront then
-        if S.layoutLR() then q = { inFront = true, x = p.x, y = 0.5 + (p.y - 0.5) * 2 }
-        else q = { inFront = true, x = 0.5 + (p.x - 0.5) * 2, y = p.y } end
+      local function full(pp)
+        if not (pp and pp.inFront) then return pp end
+        -- слева/справа половина держит ширину целого кадра, а по высоте видит
+        -- вдвое больше; сверху/снизу — наоборот
+        if S.layoutLR() then return { inFront = true, x = pp.x, y = 0.5 + (pp.y - 0.5) * 2 }
+        else return { inFront = true, x = 0.5 + (pp.x - 0.5) * 2, y = pp.y } end
       end
+      local q = full(p)
+      -- игра может развернуть камеру игрока 1 к напарнику (колесо, рычаг): тогда
+      -- напарник в кадре, а сам игрок 1 — нет. Объединяем, только если в кадре оба.
+      local q1 = full(buddyScreenPos(S.p1))
+      local p1In = q1 == nil or insideBox(q1, 0.05)
       -- объединяем, когда герои в одной комнате и напарник уверенно в кадре,
       -- или когда они просто стоят рядом (тогда комнаты не важны)
       local close, dh, dz = false, 99999, 0
@@ -796,6 +804,7 @@ local function wantSplit()
       end)
       -- в разных комнатах экран всегда разделён, как бы близко герои ни стояли
       if diffRooms or (VIS.sameFor or 0) < 20 then VIS.shownFor = 0
+      elseif not p1In then VIS.shownFor = 0
       elseif close then VIS.shownFor = VIS.shownFor + 2
       elseif insideBox(q, 0.05) then VIS.shownFor = VIS.shownFor + 1
       else VIS.shownFor = math.max(0, VIS.shownFor - 2) end     -- короткие «выпадения» не сбрасывают счёт
@@ -807,7 +816,9 @@ local function wantSplit()
       if now() - S.splitChangedAt < 1.0 then return true end   -- разделённым держим минимум 1 с
       return VIS.shownFor < 15           -- ~0,25 с
     else
-      if insideBox(p, 0.04) then VIS.hiddenFor = 0 else VIS.hiddenFor = VIS.hiddenFor + 1 end
+      local p1 = buddyScreenPos(S.p1)
+      local p1Out = p1 ~= nil and not insideBox(p1, 0.0)
+      if insideBox(p, 0.04) and not p1Out then VIS.hiddenFor = 0 else VIS.hiddenFor = VIS.hiddenFor + 1 end
       -- делим, если напарник ушёл из кадра или в другую комнату
       return VIS.hiddenFor >= 20 or VIS.diffFor >= 20
     end
@@ -4014,4 +4025,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.10.2 загружен. F9 — меню кооператива")
+log("v9.10.3 загружен. F9 — меню кооператива")
