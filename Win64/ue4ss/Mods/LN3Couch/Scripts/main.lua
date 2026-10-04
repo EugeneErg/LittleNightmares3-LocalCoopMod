@@ -1,4 +1,4 @@
--- LN3Couch v9.9.3 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.9.4 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -1581,8 +1581,13 @@ if CFG.coop_enabled then S.resumeCoop = true end
 local function resumeTick()
   if not S.resumeCoop or S.coop or S.frames % 60 ~= 0 then return end
   local pc = findPC1()
-  if not (valid(pc) and isHero(pc.Pawn)) then return end
-  if not findBuddy(pc.Pawn) then return end
+  if not (valid(pc) and isHero(pc.Pawn)) or not findBuddy(pc.Pawn) then S.resumeReady = 0; return end
+  -- не в первую же секунду уровня: игра в это время включает звук уровня
+  -- («уши», фон, музыку), и второй игрок, созданный в этот момент, сбивает
+  -- звук до следующей смерти. Ждём, пока оба героя стабильно в игре.
+  S.resumeReady = (S.resumeReady or 0) + 1
+  if S.resumeReady < (CFG.resume_delay_s or 5) then return end
+  S.resumeReady = 0
   S.resumeCoop = false
   log("кооператив возобновлён")
   setCoop(true)
@@ -3943,4 +3948,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.9.3 загружен. F9 — меню кооператива")
+log("v9.9.4 загружен. F9 — меню кооператива")
