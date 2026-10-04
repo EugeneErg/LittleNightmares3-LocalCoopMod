@@ -1,4 +1,4 @@
--- LN3Couch v9.11.4 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.11.5 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -1684,6 +1684,7 @@ local function setCoop(on)
     pcall(function() if valid(S.ai) and valid(S.buddy) then S.ai.mCurrentCharacter = S.buddy end end)
     S.itemOwners = {}
     pcall(S.snapshotItemOwners, "кооператив включён")
+    pcall(S.installInvTrace)
     S.lastBuddyLoc, S.camFrozenAt = nil, nil   -- место героя с прошлого уровня не годится
     -- запоминаем мир, в котором включились: иначе проверка смены уровня,
     -- не успевшая заметить загрузку, сразу же приостановит кооператив
@@ -2202,11 +2203,57 @@ S.fixItemOwners = function(why)
       local cur = nil; pcall(function() cur = rec.a.Owner end)
       if not valid(cur) and valid(rec.owner) then
         pcall(function() rec.a:SetOwner(rec.owner) end)
-        fixed[#fixed + 1] = cname(rec.a) .. " → " .. cname(rec.owner)
+        local now2 = nil; pcall(function() now2 = rec.a.Owner end)
+        fixed[#fixed + 1] = cname(rec.a) .. " → " .. cname(rec.owner) .. (valid(now2) and "" or " (не держится)")
       end
     end
   end
   if #fixed > 0 then trail("вещи героев: вернул владельцев (" .. (why or "") .. "): " .. table.concat(fixed, ", ")) end
+end
+-- Разбор «после подсадки не включается фонарик»: записываем вызовы функций
+-- инвентаря и самих вещей (что игра делает с вещью во время подсадки и после)
+S.installInvTrace = function()
+  if S.invTraceOn or CFG.inv_trace == false then return end
+  S.invTraceOn = true
+  local classes, seen = {}, {}
+  local function add(c) if valid(c) then local k = c:GetFullName(); if not seen[k] then seen[k] = true; classes[#classes + 1] = c end end end
+  pcall(function() for _, c in ipairs(FindAllOf("InventoryComponent") or {}) do add(c:GetClass()) end end)
+  for _, rec in pairs(S.itemOwners) do pcall(function() if valid(rec.a) then add(rec.a:GetClass()) end end) end
+  local n = 0
+  for _, cls in ipairs(classes) do
+    local c, depth = cls, 0
+    while valid(c) and depth < 4 do
+      local cn = ""; pcall(function() cn = c:GetFName():ToString() end)
+      if cn == "Actor" or cn == "ActorComponent" or cn == "Object" then break end
+      pcall(function()
+        c:ForEachFunction(function(f)
+          pcall(function()
+            local fname = f:GetFName():ToString()
+            if fname:find("^Get") or fname:find("^Is") or fname:find("^Has") or fname:find("Tick") or fname:find("Ubergraph") or fname:find("^Can") or fname:find("^Does") then return end
+            local full = f:GetFullName():gsub("^Function ", "")
+            RegisterHook(full, function(ctx, ...)
+              S.invTraceCnt = S.invTraceCnt or {}
+              local cc = S.invTraceCnt[full]; local t = now()
+              if not cc or t - cc.t > 10 then cc = { t = t, n = 0 }; S.invTraceCnt[full] = cc end
+              cc.n = cc.n + 1; if cc.n > 4 then return end
+              local who = ""; pcall(function() local o = ctx:get(); who = cname(o); local ow = o:GetOwner(); if valid(ow) then who = who .. "@" .. cname(ow) end end)
+              local parts = {}
+              for _, prm in ipairs({ ... }) do
+                local okg, v = pcall(function() return prm:get() end)
+                local d = okg and S.audioTraceArg(v) or nil
+                if d and #parts < 4 then parts[#parts + 1] = d end
+              end
+              trail("вещи: " .. who .. "." .. fname .. (#parts > 0 and (" (" .. table.concat(parts, ", ") .. ")") or ""))
+            end)
+            n = n + 1
+          end)
+        end)
+      end)
+      local ok, sup = pcall(function() return c:GetSuperStruct() end)
+      c = ok and sup or nil; depth = depth + 1
+    end
+  end
+  trail(string.format("запись вызовов вещей: %d классов, %d функций", #classes, n))
 end
 S.boostEnd = function(reason)
   local b = S.boost; if not b then return end
@@ -4167,4 +4214,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.11.4 загружен. F9 — меню кооператива")
+log("v9.11.5 загружен. F9 — меню кооператива")
