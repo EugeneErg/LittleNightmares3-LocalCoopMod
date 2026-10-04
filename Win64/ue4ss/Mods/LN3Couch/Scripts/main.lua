@@ -1,4 +1,4 @@
--- LN3Couch v9.11.2 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.11.3 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -1677,6 +1677,8 @@ local function setCoop(on)
     S.coop, S.split = true, false
     S.audioRespawnDone = false
     pcall(function() if valid(S.ai) and valid(S.buddy) then S.ai.mCurrentCharacter = S.buddy end end)
+    S.itemOwners = {}
+    pcall(S.snapshotItemOwners, "кооператив включён")
     S.lastBuddyLoc, S.camFrozenAt = nil, nil   -- место героя с прошлого уровня не годится
     -- запоминаем мир, в котором включились: иначе проверка смены уровня,
     -- не успевшая заметить загрузку, сразу же приостановит кооператив
@@ -2161,6 +2163,46 @@ S.boostPassThrough = function(on)
     end
   end)
 end
+-- Вещи героев (лук, ключ, фонарик…) — отдельные «актёры», у которых есть
+-- владелец. Когда на время подсадки героя игрока 1 ведёт ИИ, игра при
+-- возврате героя оставляла вещь без владельца, и при следующем «достать
+-- вещь» игра падала (обращалась к месту владельца, которого нет). Запоминаем
+-- владельцев вещей и возвращаем, если игра их потеряла.
+S.itemOwners = S.itemOwners or {}
+S.snapshotItemOwners = function(why)
+  local n = 0
+  for _, o in ipairs({ S.p1, S.buddy, S.pc1, S.pc2, S.ai }) do
+    if valid(o) then
+      pcall(function()
+        o.Children:ForEach(function(_, el)
+          local a = el:get()
+          local isCarry = false
+          pcall(function() local cc = carriableClass(); isCarry = valid(cc) and a:IsA(cc) end)
+          if valid(a) and not isCarry then
+            local key = a:GetFullName()
+            if not S.itemOwners[key] then n = n + 1 end
+            S.itemOwners[key] = { a = a, owner = o }
+          end
+        end)
+      end)
+    end
+  end
+  if n > 0 then trail(string.format("вещи героев: запомнил владельцев ещё у %d (%s)", n, why or "")) end
+end
+S.fixItemOwners = function(why)
+  local fixed = {}
+  for key, rec in pairs(S.itemOwners) do
+    if not valid(rec.a) then S.itemOwners[key] = nil
+    else
+      local cur = nil; pcall(function() cur = rec.a.Owner end)
+      if not valid(cur) and valid(rec.owner) then
+        pcall(function() rec.a:SetOwner(rec.owner) end)
+        fixed[#fixed + 1] = cname(rec.a) .. " → " .. cname(rec.owner)
+      end
+    end
+  end
+  if #fixed > 0 then trail("вещи героев: вернул владельцев (" .. (why or "") .. "): " .. table.concat(fixed, ", ")) end
+end
 S.boostEnd = function(reason)
   local b = S.boost; if not b then return end
   S.boost = nil
@@ -2203,6 +2245,7 @@ S.boostEnd = function(reason)
       pcall(function() S.pc1:SetViewTargetWithBlend(S.p1, 0.25, 0, 0, false) end)
     end
   end
+  pcall(S.fixItemOwners, "после подсадки")
   log("подсадка закончилась (%s)", reason)
 end
 -- Камера игрока 1 «живёт» от его героя. Пока героя на время подсадки ведёт
@@ -2466,6 +2509,7 @@ S.boostStart = function(hero, owner, spot)
   pcall(function() trail("герои перед подсадкой: " .. S.killDiag()) end)
   if hero == S.p1 then pcall(S.freezeCam1, true) end
   pcall(dedupeRegistry, "перед подсадкой")
+  pcall(S.snapshotItemOwners, "перед подсадкой")
   try("ai tick on", function() S.ai:SetActorTickEnabled(true) end)
   if not safePossess(S.ai, hero, "подсадка: герой → ИИ") then
     try("ai tick off", function() S.ai:SetActorTickEnabled(false) end)
@@ -4032,6 +4076,7 @@ local function Tick()
   if S.frames % 15 == 0 then keepListener() end
   if S.frames % 120 == 60 then pcall(S.ambienceTick) end
   if S.audioProbe and S.coop then pcall(S.audioProbeTick) end
+  if S.coop and not S.boost and S.frames % 30 == 20 then pcall(S.fixItemOwners, "проверка"); if S.frames % 600 == 20 then pcall(S.snapshotItemOwners, "обновление") end end
   if S.frames % 120 == 30 then pcall(S.keepAnimating) end
 
   if S.frames % 120 == 0 then pcall(dedupeRegistry, "проверка") end
@@ -4117,4 +4162,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.11.2 загружен. F9 — меню кооператива")
+log("v9.11.3 загружен. F9 — меню кооператива")
