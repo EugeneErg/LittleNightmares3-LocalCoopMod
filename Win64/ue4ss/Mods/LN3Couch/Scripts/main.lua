@@ -1,4 +1,4 @@
--- LN3Couch v9.11.4 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.12 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -1103,7 +1103,7 @@ S.EN = {
   ["Геймпад игрока 2 не отвечает — проверьте подключение"] = "Player 2's gamepad is not responding — check the connection",
   ["Не нашёл двух героев — загрузите игру"] = "Couldn't find both heroes — load a game first",
   ["Игрок 2 подключён"] = "Player 2 joined",
-  ["Игра будет вдвоём"] = "The game will be two-player", ["Игра будет на одного"] = "The game will be single-player",
+  ["Игра будет вдвоём"] = "The game will be two-player", ["Сначала уберите вещь из рук"] = "Put the item away first", ["Игра будет на одного"] = "The game will be single-player",
   ["Напарником снова управляет ИИ"] = "The AI controls the companion again",
   ["Настройки сброшены"] = "Settings reset",
   ["Назначено"] = "Assigned",
@@ -1684,6 +1684,7 @@ local function setCoop(on)
     pcall(function() if valid(S.ai) and valid(S.buddy) then S.ai.mCurrentCharacter = S.buddy end end)
     S.itemOwners = {}
     pcall(S.snapshotItemOwners, "кооператив включён")
+    pcall(S.installInvTrace)
     S.lastBuddyLoc, S.camFrozenAt = nil, nil   -- место героя с прошлого уровня не годится
     -- запоминаем мир, в котором включились: иначе проверка смены уровня,
     -- не успевшая заметить загрузку, сразу же приостановит кооператив
@@ -2192,7 +2193,7 @@ S.snapshotItemOwners = function(why)
       end)
     end
   end
-  if n > 0 then trail(string.format("вещи героев: запомнил владельцев ещё у %d (%s)", n, why or "")) end
+  if n > 0 then trail(string.format("вещи героев: запомнил владельцев ещё у %d (%s)", n, why or "")); pcall(S.installInvTrace) end
 end
 S.fixItemOwners = function(why)
   local fixed = {}
@@ -2201,12 +2202,323 @@ S.fixItemOwners = function(why)
     else
       local cur = nil; pcall(function() cur = rec.a.Owner end)
       if not valid(cur) and valid(rec.owner) then
-        pcall(function() rec.a:SetOwner(rec.owner) end)
-        fixed[#fixed + 1] = cname(rec.a) .. " → " .. cname(rec.owner)
+        local okS, eS = pcall(function() rec.a:SetOwner(rec.owner) end)
+        local now2 = nil; pcall(function() now2 = rec.a.Owner end)
+        fixed[#fixed + 1] = cname(rec.a) .. " → " .. cname(rec.owner) .. (valid(now2) and "" or (" (не держится" .. (okS and "" or (": " .. tostring(eS))) .. ")"))
       end
     end
   end
   if #fixed > 0 then trail("вещи героев: вернул владельцев (" .. (why or "") .. "): " .. table.concat(fixed, ", ")) end
+end
+-- Разбор «после подсадки не включается фонарик»: записываем вызовы функций
+-- инвентаря и самих вещей (что игра делает с вещью во время подсадки и после)
+S.installInvTrace = function()
+  S.invHooked = S.invHooked or {}
+  local classes, seen = {}, S.invHooked
+  local function add(c) if valid(c) then local k = c:GetFullName(); if not seen[k] then seen[k] = true; classes[#classes + 1] = c end end end
+  pcall(function() for _, c in ipairs(FindAllOf("InventoryComponent") or {}) do add(c:GetClass()) end end)
+  for _, rec in pairs(S.itemOwners) do pcall(function() if valid(rec.a) then add(rec.a:GetClass()) end end) end
+  local n = 0
+  for _, cls in ipairs(classes) do
+    local c, depth = cls, 0
+    while valid(c) and depth < 4 do
+      local cn = ""; pcall(function() cn = c:GetFName():ToString() end)
+      if cn == "Actor" or cn == "ActorComponent" or cn == "Object" then break end
+      if cn:find("Inventory") or cn:find("Flashlight") or cn:find("Weapon") or cn:find("Item") then
+        local names = {}
+        pcall(function() c:ForEachFunction(function(f) names[#names + 1] = f:GetFName():ToString() end) end)
+        if CFG.inv_trace == true then trail("вещи: функции " .. cn .. ": " .. table.concat(names, ", ")) end
+      end
+      pcall(function()
+        c:ForEachFunction(function(f)
+          pcall(function()
+            local fname = f:GetFName():ToString()
+            if fname:find("^Get") or fname:find("^Is") or fname:find("^Has") or fname:find("Tick") or fname:find("Ubergraph") or fname:find("^Can") or fname:find("^Does") then return end
+            local full = f:GetFullName():gsub("^Function ", "")
+            RegisterHook(full, function(ctx, ...)
+              -- какая вещь у героя сейчас в руках (для подсадки)
+              if fname == "OnWeaponTakeOut" or fname == "OnWeaponStashed" then
+                pcall(function()
+                  local it = ctx:get(); local ow = it:GetOwner()
+                  S.heldItem = S.heldItem or {}
+                  S.heldItemKnown = S.heldItemKnown or {}
+                  if valid(ow) then S.heldItem[ow:GetFullName()] = (fname == "OnWeaponTakeOut") and it or nil; S.heldItemKnown[ow:GetFullName()] = true end
+                  -- вещи, которые прячутся, когда их убирают (а не висят на виду)
+                  S.toolSeenOut = S.toolSeenOut or {}
+                  if fname == "OnWeaponTakeOut" then S.toolSeenOut[it:GetFullName()] = true; S.wantGATrace = true end
+                end)
+              end
+              if CFG.inv_trace ~= true then return end
+              S.invTraceCnt = S.invTraceCnt or {}
+              local cc = S.invTraceCnt[full]; local t = now()
+              if not cc or t - cc.t > 10 then cc = { t = t, n = 0 }; S.invTraceCnt[full] = cc end
+              cc.n = cc.n + 1; if cc.n > 4 then return end
+              local who = ""; pcall(function() local o = ctx:get(); who = cname(o); local ow = o:GetOwner(); if valid(ow) then who = who .. "@" .. cname(ow) end end)
+              local parts = {}
+              for _, prm in ipairs({ ... }) do
+                local okg, v = pcall(function() return prm:get() end)
+                local d = okg and S.audioTraceArg(v) or nil
+                if d and #parts < 4 then parts[#parts + 1] = d end
+              end
+              trail("вещи: " .. who .. "." .. fname .. (#parts > 0 and (" (" .. table.concat(parts, ", ") .. ")") or ""))
+            end)
+            n = n + 1
+          end)
+        end)
+      end)
+      local ok, sup = pcall(function() return c:GetSuperStruct() end)
+      c = ok and sup or nil; depth = depth + 1
+    end
+  end
+  if #classes > 0 then trail(string.format("вещи: слежу за %d новыми классами (%d функций)", #classes, n)) end
+end
+-- Вызвать функцию вещи по имени, подставив параметры по типам
+S.itemCall = function(item, fname, given)
+  local f = nil
+  local c, depth = item:GetClass(), 0
+  while valid(c) and not f and depth < 6 do
+    pcall(function() c:ForEachFunction(function(ff) if not f and ff:GetFName():ToString() == fname then f = ff end end) end)
+    local ok, sup = pcall(function() return c:GetSuperStruct() end); c = ok and sup or nil; depth = depth + 1
+  end
+  if not f then return false, "нет функции" end
+  local args, nargs = {}, 0
+  pcall(function()
+    f:ForEachProperty(function(pr)
+      local n = pr:GetFName():ToString(); if n == "ReturnValue" then return end
+      local cn = ""; pcall(function() cn = pr:GetClass():GetFName():ToString() end)
+      local v = nil
+      if cn == "BoolProperty" then v = false
+      elseif cn:find("Int") or cn == "FloatProperty" or cn == "ByteProperty" or cn == "EnumProperty" then v = 0
+      elseif cn == "StructProperty" then v = {} end
+      nargs = nargs + 1
+      if given and given[nargs] ~= nil then v = given[nargs] end
+      args[nargs] = v
+    end)
+  end)
+  return pcall(function() item[fname](item, table.unpack(args, 1, nargs)) end)
+end
+-- Если у героя игрока 1 в руках вещь (фонарик), то при передаче героя ИИ на
+-- время подсадки игра эту вещь уничтожает, а потом при попытке её достать
+-- падает. Поэтому перед подсадкой вещь убираем, как это делает сам игрок,
+-- а после подсадки достаём снова.
+S.p1HeldItem = function()
+  local it, known = nil, false
+  pcall(function()
+    local k = S.p1:GetFullName()
+    if S.heldItem and S.heldItem[k] ~= nil then known = true; it = S.heldItem[k] end
+    if S.heldItem and S.heldItemKnown and S.heldItemKnown[k] then known = true end
+  end)
+  if valid(it) then return it end
+  if known then return nil end
+  -- до первого «достал/убрал» спрашиваем саму вещь: в руках ли она
+  for _, rec in pairs(S.itemOwners or {}) do
+    local found = nil
+    pcall(function() if valid(rec.a) and rec.owner == S.p1 and rec.a:IsInUse() == true then found = rec.a end end)
+    if found then return found end
+  end
+  return nil
+end
+-- Вещи героя игрока 1, которые ещё не спрятаны (в руках или ещё убираются).
+-- Игра прячет вещь на пояс чуть позже события «убрал»; если в этот момент
+-- героя забирает ИИ, игра считает вещь брошенной: она теряет владельца,
+-- улетает с героя, а при попытке её достать игра падает.
+S.p1UnhiddenItems = function()
+  local out = {}
+  for _, rec in pairs(S.itemOwners or {}) do
+    pcall(function()
+      if valid(rec.a) and rec.owner == S.p1 and rec.a.bHidden == false then
+        local seen = S.toolSeenOut and S.toolSeenOut[rec.a:GetFullName()]
+        local inUse = false; pcall(function() inUse = rec.a:IsInUse() == true end)
+        if seen or inUse then out[#out + 1] = rec.a end
+      end
+    end)
+  end
+  return out
+end
+-- «Нажать кнопку» за игрока: событие способности OnPress_<GUID>(TimeWaited)
+S.gaPress = function(ga)
+  local fn = nil
+  pcall(function()
+    ga:GetClass():ForEachFunction(function(f)
+      local n = f:GetFName():ToString()
+      if not fn and n:find("^OnPress_") then fn = n end
+    end)
+  end)
+  if not fn then return false, "нет OnPress" end
+  local ok, e = pcall(function() ga[fn](ga, 0.0) end)
+  return ok, ok and fn or e
+end
+-- Разбор: какие функции способности вызываются при нажатии кнопки
+S.traceEquipAbility = function(ga)
+  if S.gaTraced or CFG.inv_trace ~= true then return end
+  S.gaTraced = true
+  pcall(function()
+    ga:GetClass():ForEachFunction(function(f)
+      pcall(function()
+        local n = f:GetFName():ToString()
+        if n:find("Ubergraph") then return end
+        local full = f:GetFullName():gsub("^Function ", "")
+        RegisterHook(full, function(ctx, ...)
+          local parts = {}
+          for _, prm in ipairs({ ... }) do
+            local okg, v = pcall(function() return prm:get() end)
+            local d = okg and S.audioTraceArg(v) or nil
+            if d and #parts < 4 then parts[#parts + 1] = d end
+          end
+          trail("способность: GA_EquipTool." .. n .. (#parts > 0 and (" (" .. table.concat(parts, ", ") .. ")") or ""))
+        end)
+      end)
+    end)
+  end)
+end
+-- Активная способность «экипировать вещь» героя игрока 1 (пока вещь в руках)
+S.p1EquipAbility = function()
+  local found = nil
+  pcall(function()
+    local me = S.p1:GetAddress()
+    for _, ga in ipairs(FindAllOf("GA_EquipTool_C") or {}) do
+      if found then break end
+      pcall(function()
+        local cp = ga.CurrentPlayer
+        if valid(cp) and cp:GetAddress() == me and ga.bIsActive == true then found = ga end
+      end)
+    end
+  end)
+  return found
+end
+S.boostPendingTick = function()
+  local pb = S.pendingBoost; if not pb then return end
+  -- ждём, пока вещь не только «убрана», но и спрятана игрой на пояс
+  local unhidden = S.p1UnhiddenItems()
+  local gaActive = false
+  if pb.ga then pcall(function() gaActive = valid(pb.ga) and pb.ga.bIsActive == true end) end
+  if pb.ga and not gaActive and not pb.gaEndedAt then
+    pb.gaEndedAt = S.frames
+    trail(string.format("подсадка: способность «вещь в руках» закончилась через %.1f с", (S.frames - pb.at) / 60))
+  end
+  local stashed = not gaActive and S.p1HeldItem() == nil and #unhidden == 0
+  if stashed and not pb.stashedAt then pb.stashedAt = S.frames end
+  if (stashed and S.frames - pb.stashedAt >= 10) or S.frames - pb.at > 180 then
+    S.pendingBoost = nil
+    trail(string.format("подсадка: вещь %s", stashed and "убрана и спрятана — начинаю" or "не спряталась за 3 с — подсадку не начинаю (иначе вещь сломается)"))
+    if stashed then S.boostStart(pb.hero, pb.owner, pb.spot)
+    else toast("Сначала уберите вещь из рук") end
+  end
+end
+-- Разбор: что хранит инвентарь (поля-объекты и массивы) до и после подсадки
+S.invDiag = function(label)
+  if CFG.inv_trace ~= true then return end
+  -- класс инвентаря ищем по его функции EnableItem (имя класса заранее не знаем)
+  if not S.invClassName then
+    pcall(function()
+      ForEachUObject(function(o)
+        if S.invClassName then return end
+        pcall(function()
+          if o:GetFName():ToString() == "EnableItem" and o:GetClass():GetFName():ToString() == "Function" then
+            S.invClassName = o:GetOuter():GetFName():ToString()
+          end
+        end)
+      end)
+    end)
+    trail("инвентарь: класс " .. tostring(S.invClassName))
+  end
+  local out = {}
+  -- поля самой вещи (объекты, флаги): кто её «хозяин» для игры
+  pcall(function()
+    for _, a in ipairs(FindAllOf("BP_Flashlight_Inventory_C") or {}) do
+      local parts = {}
+      local cls, depth = a:GetClass(), 0
+      while valid(cls) and depth < 5 do
+        local cn = cls:GetFName():ToString(); if cn == "Actor" then break end
+        pcall(function()
+          cls:ForEachProperty(function(pr)
+            local n = pr:GetFName():ToString()
+            local pt = ""; pcall(function() pt = pr:GetClass():GetFName():ToString() end)
+            pcall(function()
+              local x = a[n]
+              if pt:find("Object") and not pt:find("Class") then
+                local v = valid(x) and cname(x) or "nil"
+                if not (v:find("Component") or v:find("Curve") or v:find("Material") or v:find("Montage") or v:find("Anim")) then parts[#parts + 1] = n .. "=" .. v end
+              elseif pt == "BoolProperty" then parts[#parts + 1] = n .. "=" .. tostring(x)
+              end
+            end)
+          end)
+        end)
+        local ok, sup = pcall(function() return cls:GetSuperStruct() end); cls = ok and sup or nil; depth = depth + 1
+      end
+      out[#out + 1] = "поля фонарика: " .. table.concat(parts, "; ")
+    end
+  end)
+  -- все фонарики и их состояние
+  pcall(function()
+    local fl = {}
+    for _, a in ipairs(FindAllOf("BP_Flashlight_Inventory_C") or {}) do
+      local st = "?"; pcall(function() st = (a:IsPendingKill() and "уничтожен" or "жив") end)
+      local ow = "nil"; pcall(function() ow = valid(a.Owner) and cname(a.Owner) or "nil" end)
+      local par = "nil"; pcall(function() local pa = a:GetAttachParentActor(); par = valid(pa) and cname(pa) or "nil" end)
+      local d = -1; pcall(function() d = dist(a:K2_GetActorLocation(), S.p1:K2_GetActorLocation()) end)
+      local hid = "?"; pcall(function() hid = tostring(a.bHidden) end)
+      local inst = "?"; pcall(function() inst = tostring(a:GetInstigator() and cname(a:GetInstigator())) end)
+      fl[#fl + 1] = a:GetFName():ToString() .. "(" .. st .. ", владелец " .. ow .. ", прикреплён к " .. par .. string.format(", до Low %.0f см", d) .. ", скрыт " .. hid .. ", инициатор " .. inst .. ")"
+    end
+    out[#out + 1] = "фонарики: " .. table.concat(fl, ", ")
+  end)
+  for _, comp in ipairs(FindAllOf(S.invClassName or "InventoryComponent") or {}) do
+    pcall(function()
+      if not valid(comp) then return end
+      local ow = comp:GetOwner()
+      local parts = {}
+      local cls, depth = comp:GetClass(), 0
+      while valid(cls) and depth < 3 do
+        local cn = cls:GetFName():ToString(); if cn == "ActorComponent" then break end
+        pcall(function()
+          cls:ForEachProperty(function(pr)
+            local n = pr:GetFName():ToString()
+            local pt = ""; pcall(function() pt = pr:GetClass():GetFName():ToString() end)
+            pcall(function()
+              local x = comp[n]
+              if pt:find("Object") then
+                local v = "nil"; if valid(x) then v = cname(x); pcall(function() if x.IsPendingKill and x:IsPendingKill() then v = v .. "(уничтожен)" end end) end
+                parts[#parts + 1] = n .. "=" .. v
+              elseif pt == "ArrayProperty" then
+                local items = {}
+                -- элементы-структуры: печатаем их поля
+                local fields = {}
+                pcall(function() pr:GetInner():GetStruct():ForEachProperty(function(fp) fields[#fields + 1] = { fp:GetFName():ToString(), (select(2, pcall(function() return fp:GetClass():GetFName():ToString() end))) } end) end)
+                pcall(function() x:ForEach(function(_, el)
+                  local e = el:get()
+                  if #items >= 6 then return end
+                  if #fields > 0 then
+                    local fs = {}
+                    for _, fd in ipairs(fields) do
+                      pcall(function()
+                        local v = e[fd[1]]
+                        local str
+                        if type(v) == "userdata" then
+                          local okv = pcall(function() str = valid(v) and cname(v) or nil end)
+                          if not str then local okt, t2 = pcall(function() return v:ToString() end); str = okt and t2 or (fd[2] or "?") end
+                        else str = tostring(v) end
+                        fs[#fs + 1] = fd[1] .. ":" .. tostring(str)
+                      end)
+                    end
+                    items[#items + 1] = "{" .. table.concat(fs, " ") .. "}"
+                  else
+                    items[#items + 1] = (type(e) == "userdata" and (valid(e) and cname(e) or "nil")) or tostring(e)
+                  end
+                end) end)
+                parts[#parts + 1] = n .. "=[" .. table.concat(items, ",") .. "]"
+              elseif pt == "BoolProperty" or pt:find("Int") or pt == "NameProperty" or pt == "ByteProperty" or pt == "EnumProperty" then
+                parts[#parts + 1] = n .. "=" .. tostring(type(x) == "userdata" and select(2, pcall(function() return x:ToString() end)) or x)
+              end
+            end)
+          end)
+        end)
+        local ok, sup = pcall(function() return cls:GetSuperStruct() end); cls = ok and sup or nil; depth = depth + 1
+      end
+      out[#out + 1] = cname(ow) .. ": " .. table.concat(parts, "; ")
+    end)
+  end
+  trail("инвентарь (" .. label .. "): " .. table.concat(out, " || "))
 end
 S.boostEnd = function(reason)
   local b = S.boost; if not b then return end
@@ -2250,7 +2562,18 @@ S.boostEnd = function(reason)
       pcall(function() S.pc1:SetViewTargetWithBlend(S.p1, 0.25, 0, 0, false) end)
     end
   end
+  pcall(S.invDiag, "после подсадки")
   pcall(S.fixItemOwners, "после подсадки")
+  local item = S.restoreItemAfterBoost; S.restoreItemAfterBoost = nil
+  if valid(item) and b.hero == S.p1 then
+    local function back()
+      if valid(item) and S.p1HeldItem() == nil and not S.boost then
+        local ok, e = S.itemCall(item, "RequestItem")
+        trail("после подсадки: достаю " .. cname(item) .. " обратно (" .. (ok and "ок" or tostring(e)) .. ")")
+      end
+    end
+    if ExecuteWithDelay then ExecuteWithDelay(700, function() ExecuteInGameThread(function() pcall(back) end) end) else pcall(back) end
+  end
   log("подсадка закончилась (%s)", reason)
 end
 -- Камера игрока 1 «живёт» от его героя. Пока героя на время подсадки ведёт
@@ -2323,8 +2646,8 @@ S.holdCam1 = function()
       if S.pc1:GetViewTarget() ~= S.p1 then S.pc1:SetViewTargetWithBlend(S.p1, 0, 0, 0, false) end
     end)
     local age = S.boost and (S.frames - S.boost.startFrame) or 999
-    -- первую секунду — каждый кадр (видно дрожание), потом раз в секунду
-    if age < 60 or S.frames % 60 == 0 then
+    -- раз в секунду (каждый кадр — только при разборе: CFG.inv_trace = true)
+    if (CFG.inv_trace == true and age < 60) or S.frames % 60 == 0 then
       pcall(function() trail(string.format("камера 1 при подсадке (%.2f с): %s", age / 60, S.cam1Info())) end)
     end
     return
@@ -2515,6 +2838,7 @@ S.boostStart = function(hero, owner, spot)
   if hero == S.p1 then pcall(S.freezeCam1, true) end
   pcall(dedupeRegistry, "перед подсадкой")
   pcall(S.snapshotItemOwners, "перед подсадкой")
+  pcall(S.invDiag, "перед подсадкой")
   try("ai tick on", function() S.ai:SetActorTickEnabled(true) end)
   if not safePossess(S.ai, hero, "подсадка: герой → ИИ") then
     try("ai tick off", function() S.ai:SetActorTickEnabled(false) end)
@@ -2636,7 +2960,12 @@ S.boostInput = function()
     S.boostCooldown = S.frames + 60
     return
   end
+  if S.wantGATrace and not S.gaTraced then
+    S.wantGATrace = nil
+    pcall(function() local g = S.p1EquipAbility(); if g then S.traceEquipAbility(g) end end)
+  end
   if S.boost then S.boostTick(e1, e2) return end
+  if S.pendingBoost then pcall(S.boostPendingTick); return end
   if S.boostCooldown and S.frames < S.boostCooldown then return end
   -- подсадку начинаем, когда курок держат ~0,4 с, а не от любого нажатия:
   -- короткие нажатия у места подсадки (схватить что-то, в погоне) раньше
@@ -2645,7 +2974,31 @@ S.boostInput = function()
   local HOLD = CFG.boost_hold_frames or 24
   if S.rbHeld1 == HOLD then
     local spot = S.nearestBoostTo(S.p1)
-    if spot then S.boostStart(S.p1, S.pc1, spot) end
+    local ga = (spot and CFG.boost_stash ~= false) and S.p1EquipAbility() or nil
+    local item = (spot and CFG.boost_stash ~= false) and S.p1HeldItem() or nil
+    if ga then
+      -- вещь в руках держит способность игры «экипировать» (GA_EquipTool).
+      -- Убираем вещь её же командой PutAway — ровно то, что делает кнопка.
+      -- Если убрать вещь мимо способности (ReleaseItem), способность
+      -- остаётся активной, и при передаче героя ИИ игра её обрывает и
+      -- «роняет» вещь — потом при попытке достать фонарик игра падает.
+      S.traceEquipAbility(ga)
+      -- нажатие кнопки способность получает через своё событие OnPress_…
+      -- (его вызывает задача «ждать нажатия»). Вызываем его сами — это и есть
+      -- нажатие кнопки, со всеми шагами, которые игра делает дальше.
+      local ok, e = S.gaPress(ga)
+      trail("подсадка: у Low в руках вещь — нажимаю за игрока «убрать» (" .. (ok and "ок" or tostring(e)) .. ")")
+      S.pendingBoost = { hero = S.p1, owner = S.pc1, spot = spot, at = S.frames, ga = ga }
+    elseif spot and (item or #S.p1UnhiddenItems() > 0) then
+      local gl = {}
+      pcall(function()
+        for _, g in ipairs(FindAllOf("GA_EquipTool_C") or {}) do
+          pcall(function() gl[#gl + 1] = cname(g.CurrentPlayer) .. "/" .. tostring(g.bIsActive) .. "/" .. cname(g.CurrentTool) end)
+        end
+      end)
+      trail("подсадка: вещь Low ещё убирается — жду, пока спрячется (в руках=" .. cname(item) .. ", способности: " .. table.concat(gl, ", ") .. ")")
+      S.pendingBoost = { hero = S.p1, owner = S.pc1, spot = spot, at = S.frames }
+    elseif spot then S.boostStart(S.p1, S.pc1, spot) end
   elseif S.rbHeld2 == HOLD then
     local spot = S.nearestBoostTo(S.buddy)
     if spot then S.boostStart(S.buddy, S.pc2, spot) end
@@ -4167,4 +4520,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.11.4 загружен. F9 — меню кооператива")
+log("v9.12 загружен. F9 — меню кооператива")
