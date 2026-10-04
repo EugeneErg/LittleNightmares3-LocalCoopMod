@@ -1,4 +1,4 @@
--- LN3Couch v9.4.1 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.4.2 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -1150,8 +1150,15 @@ for _, fn in ipairs({ "PostGlobalAmbience", "SetGlobalAudioSettings", "PostGloba
         args[#args + 1] = okg and v or nil
       end
       S.audioCalls[fn] = args
-      local okn, n = pcall(function() return args[2]:GetFName():ToString() end)
-      trail("звук: игра вызвала " .. fn .. (okn and (" (" .. n .. ")") or ""))
+      -- имя спрашиваем, только если это настоящий живой объект: в некоторых
+      -- главах игра передаёт сюда пустой/не-объектный параметр, и запрос
+      -- имени у него роняет загрузчик модов
+      local n = nil
+      local a2 = args[2]
+      if type(a2) == "userdata" and valid(a2) then
+        pcall(function() n = a2:GetFName():ToString() end)
+      end
+      trail("звук: игра вызвала " .. fn .. (n and (" (" .. n .. ")") or ""))
     end)
   end)
 end
@@ -3598,4 +3605,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.4.1 загружен. F9 — меню кооператива")
+log("v9.4.2 загружен. F9 — меню кооператива")
