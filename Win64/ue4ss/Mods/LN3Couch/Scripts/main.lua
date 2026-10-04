@@ -1,4 +1,4 @@
--- LN3Couch v9.11.7 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.11.8 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -2315,6 +2315,45 @@ S.boostPendingTick = function()
     if stashed then S.boostStart(pb.hero, pb.owner, pb.spot) end
   end
 end
+-- Разбор: что хранит инвентарь (поля-объекты и массивы) до и после подсадки
+S.invDiag = function(label)
+  if CFG.inv_trace == false then return end
+  local out = {}
+  for _, comp in ipairs(FindAllOf("InventoryComponent") or {}) do
+    pcall(function()
+      if not valid(comp) then return end
+      local ow = comp:GetOwner()
+      if not (ow == S.p1 or ow == S.buddy or ow == S.pc1 or ow == S.pc2 or ow == S.ai) then return end
+      local parts = {}
+      local cls, depth = comp:GetClass(), 0
+      while valid(cls) and depth < 3 do
+        local cn = cls:GetFName():ToString(); if cn == "ActorComponent" then break end
+        pcall(function()
+          cls:ForEachProperty(function(pr)
+            local n = pr:GetFName():ToString()
+            local pt = ""; pcall(function() pt = pr:GetClass():GetFName():ToString() end)
+            pcall(function()
+              local x = comp[n]
+              if pt:find("Object") then
+                local v = "nil"; if valid(x) then v = cname(x); pcall(function() if x.IsPendingKill and x:IsPendingKill() then v = v .. "(уничтожен)" end end) end
+                parts[#parts + 1] = n .. "=" .. v
+              elseif pt == "ArrayProperty" then
+                local items = {}
+                pcall(function() x:ForEach(function(_, el) local e = el:get(); if #items < 6 then items[#items + 1] = (type(e) == "userdata" and (valid(e) and cname(e) or "nil")) or tostring(e) end end) end)
+                parts[#parts + 1] = n .. "=[" .. table.concat(items, ",") .. "]"
+              elseif pt == "BoolProperty" or pt:find("Int") or pt == "NameProperty" or pt == "ByteProperty" or pt == "EnumProperty" then
+                parts[#parts + 1] = n .. "=" .. tostring(type(x) == "userdata" and select(2, pcall(function() return x:ToString() end)) or x)
+              end
+            end)
+          end)
+        end)
+        local ok, sup = pcall(function() return cls:GetSuperStruct() end); cls = ok and sup or nil; depth = depth + 1
+      end
+      out[#out + 1] = cname(ow) .. ": " .. table.concat(parts, "; ")
+    end)
+  end
+  trail("инвентарь (" .. label .. "): " .. table.concat(out, " || "))
+end
 S.boostEnd = function(reason)
   local b = S.boost; if not b then return end
   S.boost = nil
@@ -2357,6 +2396,7 @@ S.boostEnd = function(reason)
       pcall(function() S.pc1:SetViewTargetWithBlend(S.p1, 0.25, 0, 0, false) end)
     end
   end
+  pcall(S.invDiag, "после подсадки")
   pcall(S.fixItemOwners, "после подсадки")
   local item = S.restoreItemAfterBoost; S.restoreItemAfterBoost = nil
   if valid(item) and b.hero == S.p1 then
@@ -2632,6 +2672,7 @@ S.boostStart = function(hero, owner, spot)
   if hero == S.p1 then pcall(S.freezeCam1, true) end
   pcall(dedupeRegistry, "перед подсадкой")
   pcall(S.snapshotItemOwners, "перед подсадкой")
+  pcall(S.invDiag, "перед подсадкой")
   try("ai tick on", function() S.ai:SetActorTickEnabled(true) end)
   if not safePossess(S.ai, hero, "подсадка: герой → ИИ") then
     try("ai tick off", function() S.ai:SetActorTickEnabled(false) end)
@@ -4291,4 +4332,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.11.7 загружен. F9 — меню кооператива")
+log("v9.11.8 загружен. F9 — меню кооператива")
