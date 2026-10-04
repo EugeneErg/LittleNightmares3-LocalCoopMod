@@ -1,4 +1,4 @@
--- LN3Couch v9.11.9 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.11.10 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -1103,7 +1103,7 @@ S.EN = {
   ["Геймпад игрока 2 не отвечает — проверьте подключение"] = "Player 2's gamepad is not responding — check the connection",
   ["Не нашёл двух героев — загрузите игру"] = "Couldn't find both heroes — load a game first",
   ["Игрок 2 подключён"] = "Player 2 joined",
-  ["Игра будет вдвоём"] = "The game will be two-player", ["Игра будет на одного"] = "The game will be single-player",
+  ["Игра будет вдвоём"] = "The game will be two-player", ["Сначала уберите вещь из рук"] = "Put the item away first", ["Игра будет на одного"] = "The game will be single-player",
   ["Напарником снова управляет ИИ"] = "The AI controls the companion again",
   ["Настройки сброшены"] = "Settings reset",
   ["Назначено"] = "Assigned",
@@ -2304,15 +2304,25 @@ S.p1HeldItem = function()
     if S.heldItem and S.heldItemKnown and S.heldItemKnown[k] then known = true end
   end)
   if valid(it) then return it end
+  if known then return nil end
+  -- до первого «достал/убрал» спрашиваем саму вещь: в руках ли она
+  for _, rec in pairs(S.itemOwners or {}) do
+    local found = nil
+    pcall(function() if valid(rec.a) and rec.owner == S.p1 and rec.a:IsInUse() == true then found = rec.a end end)
+    if found then return found end
+  end
   return nil
 end
 S.boostPendingTick = function()
   local pb = S.pendingBoost; if not pb then return end
   local stashed = S.p1HeldItem() == nil
-  if stashed or S.frames - pb.at > 120 then
+  if stashed and not pb.stashedAt then pb.stashedAt = S.frames end
+  -- после «убрал» ждём ещё ~0,3 с, чтобы игра закончила убирать вещь
+  if (stashed and S.frames - pb.stashedAt >= 20) or S.frames - pb.at > 120 then
     S.pendingBoost = nil
-    trail(string.format("подсадка: вещь %s — начинаю", stashed and "убрана" or "не убралась за 2 с"))
-    if stashed then S.boostStart(pb.hero, pb.owner, pb.spot) end
+    trail(string.format("подсадка: вещь %s", stashed and "убрана — начинаю" or "не убралась за 2 с — подсадку не начинаю (иначе вещь сломается)"))
+    if stashed then S.boostStart(pb.hero, pb.owner, pb.spot)
+    else toast("Сначала уберите вещь из рук") end
   end
 end
 -- Разбор: что хранит инвентарь (поля-объекты и массивы) до и после подсадки
@@ -2827,9 +2837,10 @@ S.boostInput = function()
   local HOLD = CFG.boost_hold_frames or 24
   if S.rbHeld1 == HOLD then
     local spot = S.nearestBoostTo(S.p1)
-    local item = (spot and CFG.boost_stash == true) and S.p1HeldItem() or nil
+    local item = (spot and CFG.boost_stash ~= false) and S.p1HeldItem() or nil
     if item then
-      local ok, e = S.itemCall(item, "RequestItem")
+      -- «убрать вещь» у игры — ReleaseItem (RequestItem — «достать»)
+      local ok, e = S.itemCall(item, "ReleaseItem")
       trail("подсадка: у Low в руках " .. cname(item) .. " — убираю перед подсадкой (" .. (ok and "ок" or tostring(e)) .. ")")
       S.pendingBoost = { hero = S.p1, owner = S.pc1, spot = spot, at = S.frames }
       S.restoreItemAfterBoost = item
@@ -4355,4 +4366,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.11.9 загружен. F9 — меню кооператива")
+log("v9.11.10 загружен. F9 — меню кооператива")
