@@ -1,4 +1,4 @@
--- LN3Couch v9.11.18 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.12 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -2227,7 +2227,7 @@ S.installInvTrace = function()
       if cn:find("Inventory") or cn:find("Flashlight") or cn:find("Weapon") or cn:find("Item") then
         local names = {}
         pcall(function() c:ForEachFunction(function(f) names[#names + 1] = f:GetFName():ToString() end) end)
-        trail("вещи: функции " .. cn .. ": " .. table.concat(names, ", "))
+        if CFG.inv_trace == true then trail("вещи: функции " .. cn .. ": " .. table.concat(names, ", ")) end
       end
       pcall(function()
         c:ForEachFunction(function(f)
@@ -2248,7 +2248,7 @@ S.installInvTrace = function()
                   if fname == "OnWeaponTakeOut" then S.toolSeenOut[it:GetFullName()] = true; S.wantGATrace = true end
                 end)
               end
-              if CFG.inv_trace == false then return end
+              if CFG.inv_trace ~= true then return end
               S.invTraceCnt = S.invTraceCnt or {}
               local cc = S.invTraceCnt[full]; local t = now()
               if not cc or t - cc.t > 10 then cc = { t = t, n = 0 }; S.invTraceCnt[full] = cc end
@@ -2335,28 +2335,6 @@ S.p1UnhiddenItems = function()
   end
   return out
 end
--- Доводим «убрать вещь» до конца. При нажатии кнопки игроком игра после
--- выключения фонарика делает ещё: SetToolHidden(true) у вещи,
--- SetWeaponVisibility(false, false) у героя, ClearAnimationOverride у вещи
--- (снимает с героя позу «фонарик в руке»). При вызове ReleaseItem из мода
--- эти шаги не происходят, и фонарик висит «полуубранным» сколько угодно.
-S.finishStash = function(item, hero, attempt)
-  local res = {}
-  local function step(obj, fn, args)
-    local ok, e = S.itemCall(obj, fn, args)
-    res[#res + 1] = fn .. "=" .. (ok and "ок" or tostring(e))
-  end
-  step(item, "SetToolHidden", { true })
-  if valid(hero) then step(hero, "SetWeaponVisibility", { false, false }) end
-  step(item, "ClearAnimationOverride")
-  -- запасной вариант: если и после этого вещь видна — прячем сам предмет
-  if attempt and attempt >= 2 then
-    local ok = pcall(function() item:SetActorHiddenInGame(true) end)
-    res[#res + 1] = "SetActorHiddenInGame=" .. (ok and "ок" or "ошибка")
-  end
-  local hid = "?"; pcall(function() hid = tostring(item.bHidden) end)
-  trail(string.format("подсадка: довожу уборку %s (%d): %s → скрыта=%s", cname(item), attempt or 0, table.concat(res, ", "), hid))
-end
 -- «Нажать кнопку» за игрока: событие способности OnPress_<GUID>(TimeWaited)
 S.gaPress = function(ga)
   local fn = nil
@@ -2372,7 +2350,7 @@ S.gaPress = function(ga)
 end
 -- Разбор: какие функции способности вызываются при нажатии кнопки
 S.traceEquipAbility = function(ga)
-  if S.gaTraced or CFG.inv_trace == false then return end
+  if S.gaTraced or CFG.inv_trace ~= true then return end
   S.gaTraced = true
   pcall(function()
     ga:GetClass():ForEachFunction(function(f)
@@ -2414,30 +2392,9 @@ S.boostPendingTick = function()
   local unhidden = S.p1UnhiddenItems()
   local gaActive = false
   if pb.ga then pcall(function() gaActive = valid(pb.ga) and pb.ga.bIsActive == true end) end
-  -- нажатие не помогло за ~0,7 с — просим убрать вещь «на сервере»
-  -- (в сетевой игре кнопка уходит туда; там вызывается UseItem(false, true))
-  if pb.ga and gaActive and not pb.serverPut and S.frames - pb.at > 40 then
-    pb.serverPut = true
-    local ok, e = pcall(function() pb.ga:Server_PutAway() end)
-    trail("подсадка: способность ещё держит вещь — Server_PutAway (" .. (ok and "ок" or tostring(e)) .. ")")
-  end
-  if pb.ga and gaActive and not pb.forced and S.frames - pb.at > 90 then
-    pb.forced = true
-    local item = S.p1HeldItem() or (S.p1UnhiddenItems())[1]
-    if valid(item) then
-      local ok, e = S.itemCall(item, "Multicast_UseItem", { false, true })
-      trail("подсадка: способность всё ещё держит вещь — Multicast_UseItem(false, true) (" .. (ok and "ок" or tostring(e)) .. ")")
-    end
-  end
   if pb.ga and not gaActive and not pb.gaEndedAt then
     pb.gaEndedAt = S.frames
     trail(string.format("подсадка: способность «вещь в руках» закончилась через %.1f с", (S.frames - pb.at) / 60))
-  end
-  -- запасной путь: способность закончилась, а вещь всё ещё видна
-  if not gaActive and S.p1HeldItem() == nil and #unhidden > 0 and (pb.releases or 0) < 2
-     and S.frames - (pb.lastRelease or pb.gaEndedAt or pb.at) > 45 then
-    pb.releases = (pb.releases or 0) + 1; pb.lastRelease = S.frames
-    S.finishStash(unhidden[1], pb.hero or S.p1, pb.releases)
   end
   local stashed = not gaActive and S.p1HeldItem() == nil and #unhidden == 0
   if stashed and not pb.stashedAt then pb.stashedAt = S.frames end
@@ -2450,7 +2407,7 @@ S.boostPendingTick = function()
 end
 -- Разбор: что хранит инвентарь (поля-объекты и массивы) до и после подсадки
 S.invDiag = function(label)
-  if CFG.inv_trace == false then return end
+  if CFG.inv_trace ~= true then return end
   -- класс инвентаря ищем по его функции EnableItem (имя класса заранее не знаем)
   if not S.invClassName then
     pcall(function()
@@ -2689,8 +2646,8 @@ S.holdCam1 = function()
       if S.pc1:GetViewTarget() ~= S.p1 then S.pc1:SetViewTargetWithBlend(S.p1, 0, 0, 0, false) end
     end)
     local age = S.boost and (S.frames - S.boost.startFrame) or 999
-    -- первую секунду — каждый кадр (видно дрожание), потом раз в секунду
-    if age < 60 or S.frames % 60 == 0 then
+    -- раз в секунду (каждый кадр — только при разборе: CFG.inv_trace = true)
+    if (CFG.inv_trace == true and age < 60) or S.frames % 60 == 0 then
       pcall(function() trail(string.format("камера 1 при подсадке (%.2f с): %s", age / 60, S.cam1Info())) end)
     end
     return
@@ -4563,4 +4520,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.11.18 загружен. F9 — меню кооператива")
+log("v9.12 загружен. F9 — меню кооператива")
