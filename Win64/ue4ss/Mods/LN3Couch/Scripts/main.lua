@@ -1,4 +1,4 @@
--- LN3Couch v9.4 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.4.1 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -3419,8 +3419,14 @@ end
 local function Tick()
   TICKS = TICKS + 1
   S.frames = S.frames + 1
+  -- первые 10 с после загрузки уровня — отметки шагов (если игра упадёт,
+  -- последняя отметка в trail.txt покажет, на каком шаге)
+  local crumb = S.crumbUntil and S.frames < S.crumbUntil and S.frames % 30 == 0
+  if crumb then trail("шаг: интерфейс") end
   try("updateUI", updateUI)
+  if crumb then trail("шаг: возобновление") end
   try("resumeTick", resumeTick)
+  if crumb then trail("шаг: меню паузы") end
   if S.detectPending and not lastPauseOpen() then S.detectPending = false; try("startDetect", startDetect) end
   if S.detect then try("detectTick", detectTick) end
   try("pauseTick", pauseTick)
@@ -3434,12 +3440,14 @@ local function Tick()
     local okw, wn = pcall(function() return UEHelpers.GetWorld():GetFullName() end)
     if okw then
       if S.worldName and wn ~= S.worldName and S.coop then try("suspendCoop", suspendCoop, "смена уровня") end
+      if wn ~= S.worldName then S.crumbUntil = S.frames + 600 end
       S.worldName = wn
     end
   end
-  -- запись анимаций героев (для подбора анимаций подсадки и других
-  -- совместных действий): работает и без кооператива
-  if S.frames % 5 == 0 then
+  -- запись анимаций героев (для разбора совместных действий) — только в
+  -- кооперативе: на заставках некоторых глав игра даёт «анимацию», обращение
+  -- к которой роняет загрузчик модов
+  if S.coop and S.frames % 5 == 0 then
     pcall(function()
       S.animSeen = S.animSeen or {}
       S.animCur = S.animCur or {}
@@ -3590,4 +3598,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.4 загружен. F9 — меню кооператива")
+log("v9.4.1 загружен. F9 — меню кооператива")
