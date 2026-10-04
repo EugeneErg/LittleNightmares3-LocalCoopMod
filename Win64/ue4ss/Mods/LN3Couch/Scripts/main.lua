@@ -1,4 +1,4 @@
--- LN3Couch v9.11.14 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.11.15 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -2273,7 +2273,7 @@ S.installInvTrace = function()
   if #classes > 0 then trail(string.format("вещи: слежу за %d новыми классами (%d функций)", #classes, n)) end
 end
 -- Вызвать функцию вещи по имени, подставив параметры по типам
-S.itemCall = function(item, fname)
+S.itemCall = function(item, fname, given)
   local f = nil
   local c, depth = item:GetClass(), 0
   while valid(c) and not f and depth < 6 do
@@ -2290,7 +2290,9 @@ S.itemCall = function(item, fname)
       if cn == "BoolProperty" then v = false
       elseif cn:find("Int") or cn == "FloatProperty" or cn == "ByteProperty" or cn == "EnumProperty" then v = 0
       elseif cn == "StructProperty" then v = {} end
-      nargs = nargs + 1; args[nargs] = v
+      nargs = nargs + 1
+      if given and given[nargs] ~= nil then v = given[nargs] end
+      args[nargs] = v
     end)
   end)
   return pcall(function() item[fname](item, table.unpack(args, 1, nargs)) end)
@@ -2341,8 +2343,10 @@ S.boostPendingTick = function()
   -- при нажатии кнопки игроком) — повторяем, пока не спрячется
   if S.p1HeldItem() == nil and #unhidden > 0 and (pb.releases or 0) < 3 and S.frames - (pb.lastRelease or pb.at) > 30 then
     pb.releases = (pb.releases or 0) + 1; pb.lastRelease = S.frames
-    local ok, e = S.itemCall(unhidden[1], "ReleaseItem")
-    trail(string.format("подсадка: вещь ещё не спрятана — убираю ещё раз (%d, %s)", pb.releases, ok and "ок" or tostring(e)))
+    -- игра прячет вещь, когда заканчивает её «использование» (так делает
+    -- кнопка фонарика игрока: UseItem(false, true))
+    local ok, e = S.itemCall(unhidden[1], "UseItem", { false, true })
+    trail(string.format("подсадка: вещь ещё не спрятана — заканчиваю её использование (%d, %s)", pb.releases, ok and "ок" or tostring(e)))
   end
   local stashed = S.p1HeldItem() == nil and #unhidden == 0
   if stashed and not pb.stashedAt then pb.stashedAt = S.frames end
@@ -4450,4 +4454,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.11.14 загружен. F9 — меню кооператива")
+log("v9.11.15 загружен. F9 — меню кооператива")
