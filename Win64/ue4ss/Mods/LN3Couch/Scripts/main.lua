@@ -1,4 +1,4 @@
--- LN3Couch v9.4.2 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.5 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -327,8 +327,9 @@ local function gms() return UEHelpers.GetGameMapsSettings() end
 -- (21:9 и шире) — слева и справа. В settings.lua можно задать
 -- split_layout = "top_bottom" или "left_right".
 S.layoutLR = function()
-  if CFG.split_layout == "left_right" then return true end
-  if CFG.split_layout == "top_bottom" then return false end
+  if CFG.split_layout_force == "left_right" then return true end
+  if CFG.split_layout_force == "top_bottom" then return false end
+  if S.splitLR ~= nil then return S.splitLR end
   if not S.aspect then
     pcall(function()
       local vs = StaticFindObject("/Script/UMG.Default__WidgetLayoutLibrary"):GetViewportSize(S.pc1)
@@ -819,6 +820,102 @@ end
 -- Второй игрок создаётся ОДИН раз и дальше не удаляется (частое создание/удаление
 -- игроков роняло игру). Когда экран общий — у второго «экрана» просто отключаем
 -- контроллер, и движок его не рисует.
+-- КАК ДЕЛИТЬ. В момент разделения смотрим, где герои на общем экране:
+-- разошлись в стороны — экран делится слева/справа, по высоте — сверху/снизу.
+-- Каждый получает ту половину, с какой стороны он находится.
+S.decideSplitSides = function()
+  S.splitLR, S.p2First = nil, false
+  if CFG.split_layout_force == "left_right" or CFG.split_layout_force == "top_bottom" then return end
+  pcall(function()
+    local vs = StaticFindObject("/Script/UMG.Default__WidgetLayoutLibrary"):GetViewportSize(S.pc1)
+    local function sp(h) local out = {}; local on = S.pc1:ProjectWorldLocationToScreen(h:K2_GetActorLocation(), out, true); return out.X, out.Y end
+    local ax, ay = sp(S.p1); local bx, by = sp(S.buddy)
+    if not (ax and ay and bx and by) then return end
+    local dx, dy = bx - ax, by - ay          -- в пикселях: сравнимо по обеим осям
+    S.splitLR = math.abs(dx) >= math.abs(dy)
+    S.p2First = S.splitLR and (dx < 0) or (not S.splitLR and dy < 0)
+    trail(string.format("экран: второй %s первого (dx=%.0f, dy=%.0f) — делю %s, второй %s",
+      S.splitLR and (dx < 0 and "левее" or "правее") or (dy < 0 and "выше" or "ниже"), dx, dy,
+      S.splitLR and "слева/справа" or "сверху/снизу", S.p2First and (S.splitLR and "слева" or "сверху") or (S.splitLR and "справа" or "снизу")))
+  end)
+end
+-- Без чёрных полос: камерам разрешаем подстраиваться под форму половины
+-- экрана. Слева/справа сохраняется вертикальный обзор, сверху/снизу —
+-- горизонтальный.
+S.applySplitAspect = function(on)
+  S.aspectSaved = S.aspectSaved or { lp = {}, cams = {} }
+  local A = S.aspectSaved
+  local lps = {}
+  pcall(function() lps[#lps + 1] = S.pc1.Player end)
+  if valid(S.lp2) then lps[#lps + 1] = S.lp2 end
+  for _, lp in ipairs(lps) do
+    pcall(function()
+      local key = lp:GetFullName()
+      if on then
+        if A.lp[key] == nil then A.lp[key] = lp.AspectRatioAxisConstraint end
+        lp.AspectRatioAxisConstraint = S.layoutLR() and 0 or 1   -- 0: держать вертикальный обзор, 1: горизонтальный
+      elseif A.lp[key] ~= nil then
+        lp.AspectRatioAxisConstraint = A.lp[key]; A.lp[key] = nil
+      end
+    end)
+  end
+  if on then
+    for _, c in ipairs(FindAllOf("CameraComponent") or {}) do
+      pcall(function()
+        if valid(c) and c.bConstrainAspectRatio then
+          A.cams[#A.cams + 1] = c; c.bConstrainAspectRatio = false
+        end
+      end)
+    end
+  else
+    for _, c in ipairs(A.cams) do pcall(function() if valid(c) then c.bConstrainAspectRatio = true end end) end
+    A.cams = {}
+  end
+end
+-- Движок ставит первого игрока всегда слева/сверху. Если второй должен быть
+-- слева/сверху — каждый кадр меняем половины местами.
+S.applySplitOrigins = function()
+  if not (S.split and S.p2First and S.splitLR ~= nil) then return end
+  local lp1 = nil; pcall(function() lp1 = S.pc1.Player end)
+  local lp2 = S.lp2
+  if not (valid(lp1) and valid(lp2)) then return end
+  local check = S.originCheck
+  if check then
+    S.originCheck = nil
+    local okr, ox = pcall(function() return lp2.Origin.X + lp2.Origin.Y end)
+    if not S.originLogged then
+      S.originLogged = true
+      trail(string.format("экран: смена половин %s", (okr and ox < 0.01) and "держится" or "сбрасывается движком"))
+    end
+  end
+  pcall(function()
+    if S.splitLR then lp1.Origin = { X = 0.5, Y = 0 } else lp1.Origin = { X = 0, Y = 0.5 } end
+    lp2.Origin = { X = 0, Y = 0 }
+  end)
+  S.originCheck = true
+end
+S.hookSplitFrame = function()
+  if S.splitHookTried or not valid(S.p1) then return end
+  S.splitHookTried = true
+  local c = S.p1:GetClass()
+  local depth = 0
+  while valid(c) and depth < 8 do
+    local found = nil
+    pcall(function() c:ForEachFunction(function(f) if f:GetFName():ToString() == "ReceiveTick" then found = f:GetFullName():gsub("^Function ", "") end end) end)
+    if found then
+      pcall(function()
+        RegisterHook(found, function(ctx)
+          if ctx:get() ~= S.p1 then return end
+          pcall(S.applySplitOrigins)
+        end)
+      end)
+      return
+    end
+    local ok, sup = pcall(function() return c:GetSuperStruct() end)
+    c = ok and sup or nil
+    depth = depth + 1
+  end
+end
 setSplitVisible = function(on)
   try("split visible", function()
     local g = gms()
@@ -837,6 +934,7 @@ setSplitVisible = function(on)
     end
   end)
   S.split = on
+  if not on then pcall(S.applySplitAspect, false); S.splitLR, S.p2First = nil, false end
 end
 
 local function applyGamepadRouting()
@@ -847,6 +945,8 @@ end
 local function updateSplit()
   if not usablePC2(S.pc2) then return end
   if S.exposureResetAt and S.frames >= S.exposureResetAt then S.exposureResetAt = nil; if not S.nativeCam then setFastExposure(false) end end
+  -- камеры новых комнат, подгрузившихся при разделённом экране, — тоже без полос
+  if S.split and S.frames % 120 == 0 then pcall(S.applySplitAspect, true) end
   local want = wantSplit()
   if want == S.split or now() - S.splitChangedAt < 1.0 then return end
   S.splitChangedAt = now()
@@ -857,7 +957,10 @@ local function updateSplit()
     end
   end
   VIS.hiddenFor, VIS.shownFor = 0, 0
+  if want then pcall(S.decideSplitSides); pcall(S.hookSplitFrame) end
   setSplitVisible(want)
+  pcall(S.applySplitAspect, want)
+  if not want then S.splitLR, S.p2First = nil, false end
   log(want and "экран разделён" or "экран общий")
 end
 
@@ -3605,4 +3708,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.4.2 загружен. F9 — меню кооператива")
+log("v9.5 загружен. F9 — меню кооператива")

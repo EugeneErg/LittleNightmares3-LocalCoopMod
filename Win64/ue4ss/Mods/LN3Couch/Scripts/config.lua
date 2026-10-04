@@ -36,7 +36,9 @@ return {
   split = "auto",
   split_on_distance  = 900,   -- разделить, если дальше (в сантиметрах игры)
   -- расположение: "top_bottom" (сверху и снизу) или "left_right"
-  split_layout = "auto",     -- "auto" (сам по экрану), "top_bottom" или "left_right"
+  -- как делить экран: сам (по тому, где герои), или всегда
+  -- split_layout_force = "top_bottom" / "left_right"
+  split_layout_force = nil,
   language = "auto",         -- язык меню мода: "auto" (как в игре), "ru" или "en"
 
   -- Если направления перепутаны
