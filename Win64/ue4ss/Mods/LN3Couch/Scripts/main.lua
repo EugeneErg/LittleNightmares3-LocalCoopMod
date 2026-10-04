@@ -1,4 +1,4 @@
--- LN3Couch v9.9.5 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.9.6 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -1342,6 +1342,11 @@ S.audioTraceArg = function(v)
   if okt and (t == "FName" or t == "FString" or t == "FText") then
     local oks, str = pcall(function() return v:ToString() end)
     if oks then return str end
+  end
+  -- объект (например, звуковое событие): только живой, и только имя
+  if okt and type(t) == "string" and t ~= "FName" and t ~= "FString" and t ~= "FText" and valid(v) then
+    local okn, nm = pcall(function() return v:GetFName():ToString() end)
+    if okn then return nm end
   end
   return nil
 end
@@ -4000,4 +4005,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.9.5 загружен. F9 — меню кооператива")
+log("v9.9.6 загружен. F9 — меню кооператива")
