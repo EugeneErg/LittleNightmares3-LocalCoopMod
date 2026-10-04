@@ -1,4 +1,4 @@
--- LN3Couch v9.7.1 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.8 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -1141,8 +1141,61 @@ S.dumpStrings = function()
   f:close()
   log("таблицы строк игры: %d таблиц, %d строк — записал в game_strings.txt", nT, nK)
 end
+-- Слова самой игры. Надпись на кнопке игры приходит уже на языке игры,
+-- поэтому для любого языка берём её прямо с экрана: ищем кнопку по её
+-- внутреннему имени (оно от языка не зависит) и запоминаем надпись.
+-- Пока нужная кнопка не встречалась — английский текст мода.
+S.GAME_WORDS = {
+  ["Назад"] = "ButtonPromptOverlay%.WidgetTree%.HUD_RightButton%.WidgetTree%.NormalText$",
+  ["<  Назад"] = "ButtonPromptOverlay%.WidgetTree%.HUD_RightButton%.WidgetTree%.NormalText$",
+  ["Сбросить настройки"] = "SettingsMenuWidget_C%.WidgetTree%.AreYouSureReset%.WidgetTree%.Comment%.WidgetTree%.txt_TITle$",
+  ["Закрыть  (F9)"] = "ButtonPromptOverlay%.WidgetTree%.HUD_RightButton%.WidgetTree%.NormalText$",
+}
+S.PLACEHOLDERS = { ["SMG Text Block"] = true, ["DefaultText"] = true, ["Test Text"] = true, ["Testser"] = true }
+S.langCode = function()
+  local code = nil
+  pcall(function()
+    local r = StaticFindObject("/Script/Engine.Default__KismetInternationalizationLibrary"):GetCurrentLanguage()
+    code = type(r) == "string" and r or r:ToString()
+  end)
+  return code
+end
+S.harvestWords = function()
+  local code = S.langCode()
+  if not code or code == "" then return end
+  CFG.game_words = CFG.game_words or {}
+  local gw = CFG.game_words
+  if gw.lang ~= code then
+    -- язык игры поменялся: старые слова не годятся, язык мода выбираем заново
+    CFG.game_words = { lang = code, w = {} }; gw = CFG.game_words; S.lang = nil
+  end
+  gw.w = gw.w or {}
+  local need = false
+  for k in pairs(S.GAME_WORDS) do if not gw.w[k] then need = true end end
+  if not need then return end
+  local changed = false
+  for _, tb in ipairs(FindAllOf("TextBlock") or {}) do
+    if valid(tb) then
+      local path = wid(tb):gsub("_%d%d%d%d+", "")
+      for k, pat in pairs(S.GAME_WORDS) do
+        if not gw.w[k] and path:find(pat) then
+          local t = S.uiText(tb)
+          if t and not S.PLACEHOLDERS[t] then
+            t = t:gsub("%?$", ""):gsub("\\n.*$", "")
+            if k == "<  Назад" then t = "<  " .. t end
+            if k == "Закрыть  (F9)" then t = t .. "  (F9)" end
+            gw.w[k] = t; changed = true
+          end
+        end
+      end
+    end
+  end
+  if changed then saveSettings(); log("слова игры (%s): обновлены", code) end
+end
 S.T = function(s)
   if type(s) ~= "string" or s == "" or S.gameLanguage() == "ru" then return s end
+  local gw = CFG.game_words
+  if gw and gw.w and gw.w[s] then return gw.w[s] end
   if S.EN[s] then return S.EN[s] end
   local a, b = s:match("^(.-): (.*)$")
   if a then return S.T(a) .. ": " .. S.T(b) end
@@ -3420,9 +3473,25 @@ local function onAnyButtonClicked(ctx)
   end
 end
 
-local function injectPause(w)
-  local sb, resume = findPanelWithChild(w.WidgetTree.RootWidget, "btn_Resume")
-  if not sb then log("меню паузы: список кнопок не найден"); return end
+-- Меню паузы: «Кооператив» перед «Выход в главное меню», образец — «Продолжить».
+-- Главное меню: «Кооператив» после «Один игрок», образец — скрытая кнопка
+-- «Купить полную версию» (того же вида, что кнопки паузы).
+local function injectPause(w, kind)
+  local root = w.WidgetTree.RootWidget
+  local sb, resume
+  local afterName
+  if kind == "main" then
+    sb = findPanelWithChild(root, "btn_Singleplayer")
+    if sb then for _, c in ipairs(children(sb)) do if wfname(c) == "btn_TrialBuyGame" then resume = c end end end
+    if not resume then
+      -- запасной образец: внутренняя кнопка «Один игрок»
+      pcall(function() local _, sp = findPanelWithChild(root, "btn_Singleplayer"); resume = sp.Button end)
+    end
+    afterName = "btn_Singleplayer"
+  else
+    sb, resume = findPanelWithChild(root, "btn_Resume")
+  end
+  if not (sb and valid(resume)) then log("меню (%s): список кнопок не найден", kind or "pause"); return end
   PM.widget, PM.sb, PM.template, PM.pages, PM.page, PM.clicks = w, sb, resume, {}, nil, {}
   PM.orig = children(sb)
   if not PM.hookOk then
@@ -3430,15 +3499,21 @@ local function injectPause(w)
     PM.hookOk = ok
     log(ok and "меню паузы: нажатия кнопок подключены" or "меню паузы: не удалось подключить нажатия")
   end
-  -- «Кооператив» вставляем перед «Выход в главное меню»
+  -- «Кооператив» вставляем перед «Выход в главное меню» (в паузе) или
+  -- после «Один игрок» (в главном меню)
   local tail = {}
   local seenMain = false
   for _, c in ipairs(PM.orig) do
     local n = wfname(c)
-    if n == "btn_MainMenu" then seenMain = true end
-    if seenMain then tail[#tail + 1] = c end
+    if afterName then
+      if seenMain then tail[#tail + 1] = c end
+      if n == afterName then seenMain = true end
+    else
+      if n == "btn_MainMenu" then seenMain = true end
+      if seenMain then tail[#tail + 1] = c end
+    end
   end
-  PM.mirror, PM.lastMirrorVis, PM.lastMirrorEn = tail[1] or resume, nil, nil
+  PM.mirror, PM.lastMirrorVis, PM.lastMirrorEn = tail[1] or (kind ~= "main" and resume or nil), nil, nil
   -- сначала создаём кнопку; трогаем список игры, только если она точно есть
   PM.coopBtn = makeBtn(resume, w, "Кооператив", function() showPage("coop") end)
   local okIns, errIns = pcall(function()
@@ -3453,7 +3528,10 @@ local function injectPause(w)
   end
   if not okIns then error(errIns) end
   PM.orig[#PM.orig + 1] = PM.coopBtn
-  log("меню паузы: пункт «Кооператив» добавлен")
+  -- образец в главном меню скрыт игрой — наша кнопка должна быть видна
+  if kind == "main" then pcall(function() PM.coopBtn:SetVisibility(0) end) end
+  PM.kind = kind or "pause"
+  log(kind == "main" and "главное меню: пункт «Кооператив» добавлен" or "меню паузы: пункт «Кооператив» добавлен")
   pcall(S.dumpStrings)
 end
 
@@ -3580,22 +3658,24 @@ end
 local function pauseTick()
   try("mirror", mirrorVisibility)
   if S.frames % 15 ~= 0 or injectFailures >= 3 then return end
-  local target = nil
-  for _, w in ipairs(FindAllOf("PauseMenuWidget_C") or {}) do
-    local okv, vis = pcall(function() return w:IsVisible() end)
-    if valid(w) and okv and vis then
-      local id = wid(w)
-      if injected[id] then
-        if PM.widget and wid(PM.widget) == id then try("labels", coopLabelRefresh) end
-      else
-        target = w
+  local target, kind = nil, nil
+  for _, m in ipairs({ { "PauseMenuWidget_C", "pause" }, { "MainMenuWidget_C", "main" } }) do
+    for _, w in ipairs(FindAllOf(m[1]) or {}) do
+      local okv, vis = pcall(function() return w:IsVisible() end)
+      if valid(w) and okv and vis then
+        local id = wid(w)
+        if injected[id] then
+          if PM.widget and wid(PM.widget) == id then try("labels", coopLabelRefresh) end
+        else
+          target, kind = w, m[2]
+        end
       end
     end
   end
   if target then
     injected[wid(target)] = true   -- помечаем сразу: вставляем не больше одного раза
     if not valid(S.pc1) then S.pc1 = findPC1() end
-    local ok = try("injectPause", injectPause, target)
+    local ok = try("injectPause", injectPause, target, kind)
     if not ok then injectFailures = injectFailures + 1 end
   end
 end
@@ -3653,6 +3733,7 @@ local function Tick()
   if S.detect then try("detectTick", detectTick) end
   try("pauseTick", pauseTick)
   try("uiDump", S.uiDumpTick)
+  if S.frames % 60 == 45 then try("words", S.harvestWords) end
   if not S.menuOpen then try("captureTick", captureTick) end
   if S.menuOpen then
     if not valid(S.pc1) then S.pc1 = findPC1() end
@@ -3821,4 +3902,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.7.1 загружен. F9 — меню кооператива")
+log("v9.8 загружен. F9 — меню кооператива")
