@@ -1,4 +1,4 @@
--- LN3Couch v9.11.11 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.11.12 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -2202,9 +2202,9 @@ S.fixItemOwners = function(why)
     else
       local cur = nil; pcall(function() cur = rec.a.Owner end)
       if not valid(cur) and valid(rec.owner) then
-        pcall(function() rec.a:SetOwner(rec.owner) end)
+        local okS, eS = pcall(function() rec.a:SetOwner(rec.owner) end)
         local now2 = nil; pcall(function() now2 = rec.a.Owner end)
-        fixed[#fixed + 1] = cname(rec.a) .. " → " .. cname(rec.owner) .. (valid(now2) and "" or " (не держится)")
+        fixed[#fixed + 1] = cname(rec.a) .. " → " .. cname(rec.owner) .. (valid(now2) and "" or (" (не держится" .. (okS and "" or (": " .. tostring(eS))) .. ")"))
       end
     end
   end
@@ -2375,7 +2375,11 @@ S.invDiag = function(label)
     for _, a in ipairs(FindAllOf("BP_Flashlight_Inventory_C") or {}) do
       local st = "?"; pcall(function() st = (a:IsPendingKill() and "уничтожен" or "жив") end)
       local ow = "nil"; pcall(function() ow = valid(a.Owner) and cname(a.Owner) or "nil" end)
-      fl[#fl + 1] = a:GetFName():ToString() .. "(" .. st .. ", владелец " .. ow .. ")"
+      local par = "nil"; pcall(function() local pa = a:GetAttachParentActor(); par = valid(pa) and cname(pa) or "nil" end)
+      local d = -1; pcall(function() d = dist(a:K2_GetActorLocation(), S.p1:K2_GetActorLocation()) end)
+      local hid = "?"; pcall(function() hid = tostring(a.bHidden) end)
+      local inst = "?"; pcall(function() inst = tostring(a:GetInstigator() and cname(a:GetInstigator())) end)
+      fl[#fl + 1] = a:GetFName():ToString() .. "(" .. st .. ", владелец " .. ow .. ", прикреплён к " .. par .. string.format(", до Low %.0f см", d) .. ", скрыт " .. hid .. ", инициатор " .. inst .. ")"
     end
     out[#out + 1] = "фонарики: " .. table.concat(fl, ", ")
   end)
@@ -2398,7 +2402,30 @@ S.invDiag = function(label)
                 parts[#parts + 1] = n .. "=" .. v
               elseif pt == "ArrayProperty" then
                 local items = {}
-                pcall(function() x:ForEach(function(_, el) local e = el:get(); if #items < 6 then items[#items + 1] = (type(e) == "userdata" and (valid(e) and cname(e) or "nil")) or tostring(e) end end) end)
+                -- элементы-структуры: печатаем их поля
+                local fields = {}
+                pcall(function() pr:GetInner():GetStruct():ForEachProperty(function(fp) fields[#fields + 1] = { fp:GetFName():ToString(), (select(2, pcall(function() return fp:GetClass():GetFName():ToString() end))) } end) end)
+                pcall(function() x:ForEach(function(_, el)
+                  local e = el:get()
+                  if #items >= 6 then return end
+                  if #fields > 0 then
+                    local fs = {}
+                    for _, fd in ipairs(fields) do
+                      pcall(function()
+                        local v = e[fd[1]]
+                        local str
+                        if type(v) == "userdata" then
+                          local okv = pcall(function() str = valid(v) and cname(v) or nil end)
+                          if not str then local okt, t2 = pcall(function() return v:ToString() end); str = okt and t2 or (fd[2] or "?") end
+                        else str = tostring(v) end
+                        fs[#fs + 1] = fd[1] .. ":" .. tostring(str)
+                      end)
+                    end
+                    items[#items + 1] = "{" .. table.concat(fs, " ") .. "}"
+                  else
+                    items[#items + 1] = (type(e) == "userdata" and (valid(e) and cname(e) or "nil")) or tostring(e)
+                  end
+                end) end)
                 parts[#parts + 1] = n .. "=[" .. table.concat(items, ",") .. "]"
               elseif pt == "BoolProperty" or pt:find("Int") or pt == "NameProperty" or pt == "ByteProperty" or pt == "EnumProperty" then
                 parts[#parts + 1] = n .. "=" .. tostring(type(x) == "userdata" and select(2, pcall(function() return x:ToString() end)) or x)
@@ -4392,4 +4419,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.11.11 загружен. F9 — меню кооператива")
+log("v9.11.12 загружен. F9 — меню кооператива")
