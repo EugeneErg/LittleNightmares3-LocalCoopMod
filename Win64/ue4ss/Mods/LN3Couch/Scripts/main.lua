@@ -1,4 +1,4 @@
--- LN3Couch v9.10.4 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.10.5 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -986,7 +986,9 @@ local function updateSplit()
     end
   end
   VIS.hiddenFor, VIS.shownFor = 0, 0
-  if want then pcall(S.decideSplitSides); pcall(S.setPlayerOrder, S.p2First) end
+  -- Проверка: смена порядка игроков делает игрока 2 «главным» для игры
+  -- (камера игрока 1 на колесе уезжает к нему). Пока по умолчанию не меняем.
+  if want then pcall(S.decideSplitSides); if CFG.split_swap_sides == true then pcall(S.setPlayerOrder, S.p2First) end end
   setSplitVisible(want)
   pcall(S.applySplitAspect, want)
   if not want then S.splitLR, S.p2First = nil, false end
@@ -1500,7 +1502,7 @@ end
 -- сразу после подключения (без смерти). Параметры функции подбираем по их
 -- типам, т.к. заранее их не знаем.
 S.respawnForAudio = function()
-  if CFG.audio_respawn == false or not (S.coop and valid(S.p1)) then return end
+  if CFG.audio_respawn ~= true or not (S.coop and valid(S.p1)) then return end
   local dc = nil
   pcall(function() dc = S.p1:GetComponentByClass(StaticFindObject("/Script/Kosmos.KosmosCharacterDeathComponent")) end)
   if not valid(dc) then trail("звук: у героя нет компонента смерти"); return end
@@ -4100,4 +4102,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.10.4 загружен. F9 — меню кооператива")
+log("v9.10.5 загружен. F9 — меню кооператива")
