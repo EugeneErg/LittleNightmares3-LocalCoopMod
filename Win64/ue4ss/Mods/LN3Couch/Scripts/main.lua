@@ -1,4 +1,4 @@
--- LN3Couch v9.12.6 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.12.7 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -1687,11 +1687,10 @@ local function setCoop(on)
     S.itemOwners = {}
     pcall(S.snapshotItemOwners, "кооператив включён")
     -- разбор «фонарик висит в воздухе после загрузки»: где фонарик и чей он
-    pcall(S.fixFloatingCarriables, "кооператив включён")
-    pcall(S.invDiag, "кооператив включён", true)
+    pcall(S.invDiag, "кооператив включён", S.pickupDiag)
     if ExecuteWithDelay then ExecuteWithDelay(5000, function() ExecuteInGameThread(function()
-      pcall(S.fixFloatingCarriables, "через 5 с после включения")
-      pcall(S.invDiag, "через 5 с после включения", true)
+      pcall(S.installInvTrace)
+      pcall(S.invDiag, "через 5 с после включения", S.pickupDiag)
     end) end) end
     pcall(S.installInvTrace)
     S.lastBuddyLoc, S.camFrozenAt = nil, nil   -- место героя с прошлого уровня не годится
@@ -2225,6 +2224,9 @@ S.fixItemOwners = function(why)
   end
   if #fixed > 0 then trail("вещи героев: вернул владельцев (" .. (why or "") .. "): " .. table.concat(fixed, ", ")) end
 end
+-- ВРЕМЕННО: разбор «фонарик висит в воздухе, если его подобрал игрок 2» —
+-- пишем, что игра делает при подборе вещи и что с ней после загрузки
+S.pickupDiag = true
 -- Разбор «после подсадки не включается фонарик»: записываем вызовы функций
 -- инвентаря и самих вещей (что игра делает с вещью во время подсадки и после)
 S.installInvTrace = function()
@@ -2233,16 +2235,27 @@ S.installInvTrace = function()
   local function add(c) if valid(c) then local k = c:GetFullName(); if not seen[k] then seen[k] = true; classes[#classes + 1] = c end end end
   pcall(function() for _, c in ipairs(FindAllOf("InventoryComponent") or {}) do add(c:GetClass()) end end)
   for _, rec in pairs(S.itemOwners) do pcall(function() if valid(rec.a) then add(rec.a:GetClass()) end end) end
+  if S.pickupDiag then
+    -- подбор вещей: способность «подобрать», сами подбираемые вещи и их компоненты
+    for _, cn in ipairs({ "GA_Pickup_C", "KosmosInventoryItemComponent", "KosmosPickupComponent" }) do
+      pcall(function() for _, o in ipairs(FindAllOf(cn) or {}) do add(o:GetClass()) end end)
+    end
+    pcall(function()
+      for _, o in ipairs(FindAllOf("KosmosCarriable") or {}) do
+        pcall(function() if valid(o.PickupComponent) and o:GetClass():GetFName():ToString():find("Flashlight") then add(o:GetClass()) end end)
+      end
+    end)
+  end
   local n = 0
   for _, cls in ipairs(classes) do
     local c, depth = cls, 0
     while valid(c) and depth < 4 do
       local cn = ""; pcall(function() cn = c:GetFName():ToString() end)
-      if cn == "Actor" or cn == "ActorComponent" or cn == "Object" then break end
+      if cn == "Actor" or cn == "ActorComponent" or cn == "Object" or cn == "GameplayAbility" then break end
       if cn:find("Inventory") or cn:find("Flashlight") or cn:find("Weapon") or cn:find("Item") then
         local names = {}
         pcall(function() c:ForEachFunction(function(f) names[#names + 1] = f:GetFName():ToString() end) end)
-        if CFG.inv_trace == true then trail("вещи: функции " .. cn .. ": " .. table.concat(names, ", ")) end
+        if CFG.inv_trace == true or S.pickupDiag then trail("вещи: функции " .. cn .. ": " .. table.concat(names, ", ")) end
       end
       pcall(function()
         c:ForEachFunction(function(f)
@@ -2263,7 +2276,12 @@ S.installInvTrace = function()
                   if fname == "OnWeaponTakeOut" then S.toolSeenOut[it:GetFullName()] = true; S.wantGATrace = true end
                 end)
               end
-              if CFG.inv_trace ~= true then return end
+              -- после подбора — снимок состояния вещей
+              if S.pickupDiag and (fname == "K2_OnEndAbility" or fname == "K2_ActivateAbility") and full:find("GA_Pickup") and ExecuteWithDelay then
+                local lbl = fname == "K2_OnEndAbility" and "после подбора" or "подбор начат"
+                ExecuteWithDelay(fname == "K2_OnEndAbility" and 1000 or 300, function() ExecuteInGameThread(function() pcall(S.invDiag, lbl, true) end) end)
+              end
+              if CFG.inv_trace ~= true and not S.pickupDiag then return end
               S.invTraceCnt = S.invTraceCnt or {}
               local cc = S.invTraceCnt[full]; local t = now()
               if not cc or t - cc.t > 10 then cc = { t = t, n = 0 }; S.invTraceCnt[full] = cc end
@@ -2448,24 +2466,6 @@ S.boostPendingTick = function()
     trail(string.format("подсадка: вещь %s", stashed and "убрана и спрятана — начинаю" or "не спряталась за 3 с — подсадку не начинаю (иначе вещь сломается)"))
     if stashed then S.boostStart(pb.hero, pb.owner, pb.spot)
     else toast("Сначала уберите вещь из рук") end
-  end
-end
--- Предмет, который можно подобрать (фонарик, ключ), висит в воздухе после
--- загрузки, если игру сохранили, пока его нёс «не тот» герой: игра запомнила
--- его в состоянии «в руке» и на высоте руки, а к руке после загрузки не
--- прикрепила. Такой предмет переводим в состояние «на земле» — он падает.
-S.fixFloatingCarriables = function(why)
-  for _, a in ipairs(FindAllOf("KosmosCarriable") or {}) do
-    pcall(function()
-      if not valid(a) or a.bHidden == true then return end
-      local use = -1; pcall(function() use = a.CarriableUsage end)
-      if type(use) ~= "number" then pcall(function() use = tonumber(tostring(use)) or -1 end) end
-      if use ~= 1 then return end
-      local par = nil; pcall(function() par = a:GetAttachParentActor() end)
-      if valid(par) then return end
-      local ok, e = pcall(function() a:SetCarriableUsage(0) end)
-      trail(string.format("вещь висит в воздухе (%s): %s — кладу на землю (%s)", why or "", cname(a), ok and "ок" or tostring(e)))
-    end)
   end
 end
 -- Разбор: что хранит инвентарь (поля-объекты и массивы) до и после подсадки
@@ -4237,6 +4237,7 @@ local function injectPause(w, kind)
   if kind == "main" then pcall(function() PM.coopBtn:SetVisibility(0) end) end
   PM.kind = kind or "pause"
   log(kind == "main" and "главное меню: пункт «Кооператив» добавлен" or "меню паузы: пункт «Кооператив» добавлен")
+  if kind ~= "main" and S.pickupDiag then pcall(S.invDiag, "пауза", true) end
 end
 
 -- Разовый разбор экранов игры (главное меню, настройки, пауза): какие там
@@ -4609,4 +4610,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.12.6 загружен. F9 — меню кооператива")
+log("v9.12.7 загружен. F9 — меню кооператива")
