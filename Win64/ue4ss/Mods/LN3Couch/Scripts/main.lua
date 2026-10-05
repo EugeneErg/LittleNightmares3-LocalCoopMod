@@ -1,4 +1,4 @@
--- LN3Couch v9.12.2 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.12.3 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -2396,7 +2396,7 @@ S.traceEquipAbility = function(ga)
             local d = okg and S.audioTraceArg(v) or nil
             if d and #parts < 4 then parts[#parts + 1] = d end
           end
-          trail("способность: GA_EquipTool." .. n .. (#parts > 0 and (" (" .. table.concat(parts, ", ") .. ")") or ""))
+          trail("способность: " .. cname(ga) .. "." .. n .. (#parts > 0 and (" (" .. table.concat(parts, ", ") .. ")") or ""))
         end)
       end)
     end)
@@ -2408,12 +2408,16 @@ S.p1EquipAbility = function(hero)
   local found = nil
   pcall(function()
     local me = hero:GetAddress()
-    for _, ga in ipairs(FindAllOf("GA_EquipTool_C") or {}) do
-      if found then break end
-      pcall(function()
-        local cp = ga.CurrentPlayer
-        if valid(cp) and cp:GetAddress() == me and ga.bIsActive == true then found = ga end
-      end)
+    -- фонарик/зонт держит GA_EquipTool, гаечный ключ Alone — GA_WeaponWrench;
+    -- у обеих есть своё событие нажатия «убрать» (OnPress_…)
+    for _, cls in ipairs({ "GA_EquipTool_C", "GA_WeaponWrench_C" }) do
+      for _, ga in ipairs(FindAllOf(cls) or {}) do
+        if found then break end
+        pcall(function()
+          local cp = ga.CurrentPlayer
+          if valid(cp) and cp:GetAddress() == me and ga.bIsActive == true then found = ga end
+        end)
+      end
     end
   end)
   return found
@@ -4553,4 +4557,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.12.2 загружен. F9 — меню кооператива")
+log("v9.12.3 загружен. F9 — меню кооператива")
