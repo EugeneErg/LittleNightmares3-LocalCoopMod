@@ -1,4 +1,4 @@
--- LN3Couch v9.12 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.12.1 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -2301,10 +2301,11 @@ end
 -- время подсадки игра эту вещь уничтожает, а потом при попытке её достать
 -- падает. Поэтому перед подсадкой вещь убираем, как это делает сам игрок,
 -- а после подсадки достаём снова.
-S.p1HeldItem = function()
+S.p1HeldItem = function(hero)
+  hero = hero or S.p1
   local it, known = nil, false
   pcall(function()
-    local k = S.p1:GetFullName()
+    local k = hero:GetFullName()
     if S.heldItem and S.heldItem[k] ~= nil then known = true; it = S.heldItem[k] end
     if S.heldItem and S.heldItemKnown and S.heldItemKnown[k] then known = true end
   end)
@@ -2313,7 +2314,7 @@ S.p1HeldItem = function()
   -- до первого «достал/убрал» спрашиваем саму вещь: в руках ли она
   for _, rec in pairs(S.itemOwners or {}) do
     local found = nil
-    pcall(function() if valid(rec.a) and rec.owner == S.p1 and rec.a:IsInUse() == true then found = rec.a end end)
+    pcall(function() if valid(rec.a) and rec.owner == hero and rec.a:IsInUse() == true then found = rec.a end end)
     if found then return found end
   end
   return nil
@@ -2322,11 +2323,12 @@ end
 -- Игра прячет вещь на пояс чуть позже события «убрал»; если в этот момент
 -- героя забирает ИИ, игра считает вещь брошенной: она теряет владельца,
 -- улетает с героя, а при попытке её достать игра падает.
-S.p1UnhiddenItems = function()
+S.p1UnhiddenItems = function(hero)
+  hero = hero or S.p1
   local out = {}
   for _, rec in pairs(S.itemOwners or {}) do
     pcall(function()
-      if valid(rec.a) and rec.owner == S.p1 and rec.a.bHidden == false then
+      if valid(rec.a) and rec.owner == hero and rec.a.bHidden == false then
         local seen = S.toolSeenOut and S.toolSeenOut[rec.a:GetFullName()]
         local inUse = false; pcall(function() inUse = rec.a:IsInUse() == true end)
         if seen or inUse then out[#out + 1] = rec.a end
@@ -2372,10 +2374,11 @@ S.traceEquipAbility = function(ga)
   end)
 end
 -- Активная способность «экипировать вещь» героя игрока 1 (пока вещь в руках)
-S.p1EquipAbility = function()
+S.p1EquipAbility = function(hero)
+  hero = hero or S.p1
   local found = nil
   pcall(function()
-    local me = S.p1:GetAddress()
+    local me = hero:GetAddress()
     for _, ga in ipairs(FindAllOf("GA_EquipTool_C") or {}) do
       if found then break end
       pcall(function()
@@ -2389,14 +2392,14 @@ end
 S.boostPendingTick = function()
   local pb = S.pendingBoost; if not pb then return end
   -- ждём, пока вещь не только «убрана», но и спрятана игрой на пояс
-  local unhidden = S.p1UnhiddenItems()
+  local unhidden = S.p1UnhiddenItems(pb.hero)
   local gaActive = false
   if pb.ga then pcall(function() gaActive = valid(pb.ga) and pb.ga.bIsActive == true end) end
   if pb.ga and not gaActive and not pb.gaEndedAt then
     pb.gaEndedAt = S.frames
     trail(string.format("подсадка: способность «вещь в руках» закончилась через %.1f с", (S.frames - pb.at) / 60))
   end
-  local stashed = not gaActive and S.p1HeldItem() == nil and #unhidden == 0
+  local stashed = not gaActive and S.p1HeldItem(pb.hero) == nil and #unhidden == 0
   if stashed and not pb.stashedAt then pb.stashedAt = S.frames end
   if (stashed and S.frames - pb.stashedAt >= 10) or S.frames - pb.at > 180 then
     S.pendingBoost = nil
@@ -2972,36 +2975,36 @@ S.boostInput = function()
   -- то начинали, то сразу отменяли подсадку, и каждый раз героя забирали у
   -- игрока и возвращали — в погоне это роняло игру
   local HOLD = CFG.boost_hold_frames or 24
-  if S.rbHeld1 == HOLD then
-    local spot = S.nearestBoostTo(S.p1)
-    local ga = (spot and CFG.boost_stash ~= false) and S.p1EquipAbility() or nil
-    local item = (spot and CFG.boost_stash ~= false) and S.p1HeldItem() or nil
-    if ga then
-      -- вещь в руках держит способность игры «экипировать» (GA_EquipTool).
-      -- Убираем вещь её же командой PutAway — ровно то, что делает кнопка.
-      -- Если убрать вещь мимо способности (ReleaseItem), способность
-      -- остаётся активной, и при передаче героя ИИ игра её обрывает и
-      -- «роняет» вещь — потом при попытке достать фонарик игра падает.
-      S.traceEquipAbility(ga)
-      -- нажатие кнопки способность получает через своё событие OnPress_…
-      -- (его вызывает задача «ждать нажатия»). Вызываем его сами — это и есть
-      -- нажатие кнопки, со всеми шагами, которые игра делает дальше.
-      local ok, e = S.gaPress(ga)
-      trail("подсадка: у Low в руках вещь — нажимаю за игрока «убрать» (" .. (ok and "ок" or tostring(e)) .. ")")
-      S.pendingBoost = { hero = S.p1, owner = S.pc1, spot = spot, at = S.frames, ga = ga }
-    elseif spot and (item or #S.p1UnhiddenItems() > 0) then
-      local gl = {}
-      pcall(function()
-        for _, g in ipairs(FindAllOf("GA_EquipTool_C") or {}) do
-          pcall(function() gl[#gl + 1] = cname(g.CurrentPlayer) .. "/" .. tostring(g.bIsActive) .. "/" .. cname(g.CurrentTool) end)
-        end
-      end)
-      trail("подсадка: вещь Low ещё убирается — жду, пока спрячется (в руках=" .. cname(item) .. ", способности: " .. table.concat(gl, ", ") .. ")")
-      S.pendingBoost = { hero = S.p1, owner = S.pc1, spot = spot, at = S.frames }
-    elseif spot then S.boostStart(S.p1, S.pc1, spot) end
-  elseif S.rbHeld2 == HOLD then
-    local spot = S.nearestBoostTo(S.buddy)
-    if spot then S.boostStart(S.buddy, S.pc2, spot) end
+  if S.rbHeld1 == HOLD then S.tryBoost(S.p1, S.pc1, "Low")
+  elseif S.rbHeld2 == HOLD then S.tryBoost(S.buddy, S.pc2, "Alone") end
+end
+-- Начать подсадку героем hero. Если у него в руках вещь (фонарик, ключ),
+-- сначала убираем её: при передаче героя ИИ игра обрывает способность
+-- «вещь в руках» и «роняет» вещь — потом при попытке её достать или
+-- использовать игра падает. Убираем «нажатием» кнопки за игрока: вызываем
+-- событие способности GA_EquipTool, которое получает она сама при нажатии.
+S.tryBoost = function(hero, owner, who)
+  local spot = S.nearestBoostTo(hero)
+  if not spot then return end
+  local stash = CFG.boost_stash ~= false
+  local ga = stash and S.p1EquipAbility(hero) or nil
+  local item = stash and S.p1HeldItem(hero) or nil
+  if ga then
+    S.traceEquipAbility(ga)
+    local ok, e = S.gaPress(ga)
+    trail("подсадка: у " .. who .. " в руках вещь — нажимаю за игрока «убрать» (" .. (ok and "ок" or tostring(e)) .. ")")
+    S.pendingBoost = { hero = hero, owner = owner, spot = spot, at = S.frames, ga = ga }
+  elseif stash and (item or #S.p1UnhiddenItems(hero) > 0) then
+    local gl = {}
+    pcall(function()
+      for _, g in ipairs(FindAllOf("GA_EquipTool_C") or {}) do
+        pcall(function() gl[#gl + 1] = cname(g.CurrentPlayer) .. "/" .. tostring(g.bIsActive) .. "/" .. cname(g.CurrentTool) end)
+      end
+    end)
+    trail("подсадка: вещь " .. who .. " ещё убирается — жду, пока спрячется (в руках=" .. cname(item) .. ", способности: " .. table.concat(gl, ", ") .. ")")
+    S.pendingBoost = { hero = hero, owner = owner, spot = spot, at = S.frames }
+  else
+    S.boostStart(hero, owner, spot)
   end
 end
 
@@ -4520,4 +4523,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.12 загружен. F9 — меню кооператива")
+log("v9.12.1 загружен. F9 — меню кооператива")
