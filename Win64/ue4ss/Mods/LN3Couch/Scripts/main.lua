@@ -1,4 +1,4 @@
--- LN3Couch v9.12.3 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.12.4 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -1674,6 +1674,8 @@ local function setCoop(on)
   if on then
     applyGamepadRouting()
     S.frames = 0
+    -- отметки шагов после загрузки считаются в кадрах — счёт кадров начался заново
+    if S.crumbUntil then S.crumbUntil = 300 end
     -- всё, что отсчитывается в кадрах, начинаем заново (иначе после
     -- возобновления подсадка «ждёт» паузу, оставшуюся с прошлого раза)
     S.boost, S.boostCooldown, S.pendingKill, S.localSwap = nil, nil, nil, nil
@@ -1684,6 +1686,9 @@ local function setCoop(on)
     pcall(function() if valid(S.ai) and valid(S.buddy) then S.ai.mCurrentCharacter = S.buddy end end)
     S.itemOwners = {}
     pcall(S.snapshotItemOwners, "кооператив включён")
+    -- разбор «фонарик висит в воздухе после загрузки»: где фонарик и чей он
+    pcall(S.invDiag, "кооператив включён", true)
+    if ExecuteWithDelay then ExecuteWithDelay(5000, function() ExecuteInGameThread(function() pcall(S.invDiag, "через 5 с после включения", true) end) end) end
     pcall(S.installInvTrace)
     S.lastBuddyLoc, S.camFrozenAt = nil, nil   -- место героя с прошлого уровня не годится
     -- запоминаем мир, в котором включились: иначе проверка смены уровня,
@@ -2442,8 +2447,8 @@ S.boostPendingTick = function()
   end
 end
 -- Разбор: что хранит инвентарь (поля-объекты и массивы) до и после подсадки
-S.invDiag = function(label)
-  if CFG.inv_trace ~= true then return end
+S.invDiag = function(label, force)
+  if CFG.inv_trace ~= true and not force then return end
   -- класс инвентаря ищем по его функции EnableItem (имя класса заранее не знаем)
   if not S.invClassName then
     pcall(function()
@@ -2493,9 +2498,13 @@ S.invDiag = function(label)
       local ow = "nil"; pcall(function() ow = valid(a.Owner) and cname(a.Owner) or "nil" end)
       local par = "nil"; pcall(function() local pa = a:GetAttachParentActor(); par = valid(pa) and cname(pa) or "nil" end)
       local d = -1; pcall(function() d = dist(a:K2_GetActorLocation(), S.p1:K2_GetActorLocation()) end)
+      local d2 = -1; pcall(function() d2 = dist(a:K2_GetActorLocation(), S.buddy:K2_GetActorLocation()) end)
+      local sock = "?"; pcall(function() sock = a.RootComponent:GetAttachSocketName():ToString() end)
       local hid = "?"; pcall(function() hid = tostring(a.bHidden) end)
       local inst = "?"; pcall(function() inst = tostring(a:GetInstigator() and cname(a:GetInstigator())) end)
-      fl[#fl + 1] = a:GetFName():ToString() .. "(" .. st .. ", владелец " .. ow .. ", прикреплён к " .. par .. string.format(", до Low %.0f см", d) .. ", скрыт " .. hid .. ", инициатор " .. inst .. ")"
+      local use = "?"; pcall(function() use = tostring(a:IsInUse()) end)
+      local th = "?"; pcall(function() th = tostring(a:GetToolHidden()) end)
+      fl[#fl + 1] = a:GetFName():ToString() .. "(" .. st .. ", владелец " .. ow .. ", прикреплён к " .. par .. " [" .. sock .. "]" .. string.format(", до Low %.0f см, до Alone %.0f см", d, d2) .. ", скрыт " .. hid .. ", ToolHidden " .. th .. ", в руках " .. use .. ", инициатор " .. inst .. ")"
     end
     out[#out + 1] = "фонарики: " .. table.concat(fl, ", ")
   end)
@@ -4557,4 +4566,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.12.3 загружен. F9 — меню кооператива")
+log("v9.12.4 загружен. F9 — меню кооператива")
