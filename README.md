@@ -21,7 +21,7 @@ Little Nightmares III only offers online co-op. LN3Couch lets a second person on
 
 ### Two real players
 - **Player 2 plays the companion with their own gamepad**, using the game's standard controls. Walk, run, crouch, jump, grab, carry and throw items, push and pull boxes, use the wrench or the bow, climb — everything Player 1 can do.
-- **Boosting each other.** At the places where the game has a boost, hold the grab button (RT). Whoever holds it first gives the boost, the other player jumps. Either player can give the boost, and it plays the game's own animations. Hold the trigger for a moment (about half a second); a quick tap does not start a boost. If the hero giving the boost holds a flashlight, it is put away first, as if the button were pressed; take it out again after the boost.
+- **Boosting each other.** At the places where the game has a boost, hold the grab button (RT). Whoever holds it first gives the boost, the other player jumps. Either player can give the boost, and it plays the game's own animations. Hold the trigger for a moment (about half a second); a quick tap does not start a boost. If the hero giving the boost holds something (Low's flashlight, Alone's wrench), it is put away first, as if the button were pressed; take it out again after the boost.
 - **Enemies hunt both of you.** In the single-player game enemies only catch the player and leave the AI companion alone. With LN3Couch the second hero is a real player, so enemies catch either of you, in normal encounters and in chases.
 
 ### Camera and screen
