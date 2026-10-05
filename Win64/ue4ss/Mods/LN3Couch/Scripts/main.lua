@@ -1,4 +1,4 @@
--- LN3Couch v9.12.4 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.12.5 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -2508,6 +2508,26 @@ S.invDiag = function(label, force)
     end
     out[#out + 1] = "фонарики: " .. table.concat(fl, ", ")
   end)
+  -- вещи, лежащие в мире (то, что можно подобрать): чьи, где, подобраны ли
+  pcall(function()
+    local pk = {}
+    for _, c in ipairs(FindAllOf("KosmosInventoryItemComponent") or {}) do
+      pcall(function()
+        local a = c:GetOwner()
+        local nm = "?"; pcall(function() nm = c.ItemName.ItemName:ToString() end)
+        if nm == "?" then pcall(function() nm = tostring(c.ItemName) end) end
+        local loc = "?"; pcall(function() local v = a:K2_GetActorLocation(); loc = string.format("%.0f %.0f %.0f", v.X, v.Y, v.Z) end)
+        local par = "nil"; pcall(function() local pa = a:GetAttachParentActor(); par = valid(pa) and cname(pa) or "nil" end)
+        local d = -1; pcall(function() d = dist(a:K2_GetActorLocation(), S.p1:K2_GetActorLocation()) end)
+        local d2 = -1; pcall(function() d2 = dist(a:K2_GetActorLocation(), S.buddy:K2_GetActorLocation()) end)
+        local hid = "?"; pcall(function() hid = tostring(a.bHidden) end)
+        local col = "?"; pcall(function() col = tostring(c.IsItemCollected) end)
+        local phys = "?"; pcall(function() phys = tostring(a.RootComponent:IsSimulatingPhysics()) end)
+        pk[#pk + 1] = string.format("%s/%s (подобрана %s, скрыта %s, физика %s, прикреплена к %s, место %s, до Low %.0f, до Alone %.0f)", cname(a), nm, col, hid, phys, par, loc, d, d2)
+      end)
+    end
+    out[#out + 1] = "вещи в мире: " .. table.concat(pk, ", ")
+  end)
   for _, comp in ipairs(FindAllOf(S.invClassName or "InventoryComponent") or {}) do
     pcall(function()
       if not valid(comp) then return end
@@ -4566,4 +4586,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.12.4 загружен. F9 — меню кооператива")
+log("v9.12.5 загружен. F9 — меню кооператива")
