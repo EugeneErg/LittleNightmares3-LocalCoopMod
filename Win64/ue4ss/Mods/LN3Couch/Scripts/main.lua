@@ -1,4 +1,4 @@
--- LN3Couch v9.12.5 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.12.6 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -1687,8 +1687,12 @@ local function setCoop(on)
     S.itemOwners = {}
     pcall(S.snapshotItemOwners, "кооператив включён")
     -- разбор «фонарик висит в воздухе после загрузки»: где фонарик и чей он
+    pcall(S.fixFloatingCarriables, "кооператив включён")
     pcall(S.invDiag, "кооператив включён", true)
-    if ExecuteWithDelay then ExecuteWithDelay(5000, function() ExecuteInGameThread(function() pcall(S.invDiag, "через 5 с после включения", true) end) end) end
+    if ExecuteWithDelay then ExecuteWithDelay(5000, function() ExecuteInGameThread(function()
+      pcall(S.fixFloatingCarriables, "через 5 с после включения")
+      pcall(S.invDiag, "через 5 с после включения", true)
+    end) end) end
     pcall(S.installInvTrace)
     S.lastBuddyLoc, S.camFrozenAt = nil, nil   -- место героя с прошлого уровня не годится
     -- запоминаем мир, в котором включились: иначе проверка смены уровня,
@@ -2446,6 +2450,24 @@ S.boostPendingTick = function()
     else toast("Сначала уберите вещь из рук") end
   end
 end
+-- Предмет, который можно подобрать (фонарик, ключ), висит в воздухе после
+-- загрузки, если игру сохранили, пока его нёс «не тот» герой: игра запомнила
+-- его в состоянии «в руке» и на высоте руки, а к руке после загрузки не
+-- прикрепила. Такой предмет переводим в состояние «на земле» — он падает.
+S.fixFloatingCarriables = function(why)
+  for _, a in ipairs(FindAllOf("KosmosCarriable") or {}) do
+    pcall(function()
+      if not valid(a) or a.bHidden == true then return end
+      local use = -1; pcall(function() use = a.CarriableUsage end)
+      if type(use) ~= "number" then pcall(function() use = tonumber(tostring(use)) or -1 end) end
+      if use ~= 1 then return end
+      local par = nil; pcall(function() par = a:GetAttachParentActor() end)
+      if valid(par) then return end
+      local ok, e = pcall(function() a:SetCarriableUsage(0) end)
+      trail(string.format("вещь висит в воздухе (%s): %s — кладу на землю (%s)", why or "", cname(a), ok and "ок" or tostring(e)))
+    end)
+  end
+end
 -- Разбор: что хранит инвентарь (поля-объекты и массивы) до и после подсадки
 S.invDiag = function(label, force)
   if CFG.inv_trace ~= true and not force then return end
@@ -2522,8 +2544,9 @@ S.invDiag = function(label, force)
         local d2 = -1; pcall(function() d2 = dist(a:K2_GetActorLocation(), S.buddy:K2_GetActorLocation()) end)
         local hid = "?"; pcall(function() hid = tostring(a.bHidden) end)
         local col = "?"; pcall(function() col = tostring(c.IsItemCollected) end)
-        local phys = "?"; pcall(function() phys = tostring(a.RootComponent:IsSimulatingPhysics()) end)
-        pk[#pk + 1] = string.format("%s/%s (подобрана %s, скрыта %s, физика %s, прикреплена к %s, место %s, до Low %.0f, до Alone %.0f)", cname(a), nm, col, hid, phys, par, loc, d, d2)
+        local phys = "?"; pcall(function() phys = tostring(a.ItemMesh:IsSimulatingPhysics()) end)
+        local use = "?"; pcall(function() use = tostring(a.CarriableUsage) end)
+        pk[#pk + 1] = string.format("%s (подобрана %s, скрыта %s, физика %s, состояние %s, прикреплена к %s, место %s, до Low %.0f, до Alone %.0f)", cname(a), col, hid, phys, use, par, loc, d, d2)
       end)
     end
     out[#out + 1] = "вещи в мире: " .. table.concat(pk, ", ")
@@ -4586,4 +4609,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.12.5 загружен. F9 — меню кооператива")
+log("v9.12.6 загружен. F9 — меню кооператива")
