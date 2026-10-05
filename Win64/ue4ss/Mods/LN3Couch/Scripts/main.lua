@@ -1,4 +1,4 @@
--- LN3Couch v9.12 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.13 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -1674,6 +1674,8 @@ local function setCoop(on)
   if on then
     applyGamepadRouting()
     S.frames = 0
+    -- отметки шагов после загрузки считаются в кадрах — счёт кадров начался заново
+    if S.crumbUntil then S.crumbUntil = 300 end
     -- всё, что отсчитывается в кадрах, начинаем заново (иначе после
     -- возобновления подсадка «ждёт» паузу, оставшуюся с прошлого раза)
     S.boost, S.boostCooldown, S.pendingKill, S.localSwap = nil, nil, nil, nil
@@ -1696,12 +1698,18 @@ local function setCoop(on)
     ensurePC2()
     S.real = false
     if wantReal() then
-      if registryWorks() then takeBuddy() else log("режим второго игрока недоступен — управляю через ИИ") end
+      if registryWorks() then S.withHandsFree(S.buddy, takeBuddy, "перед передачей героя игроку 2") else log("режим второго игрока недоступен — управляю через ИИ") end
     end
     toast("Игрок 2 подключён: " .. heroName(S.buddy))
     S.audioProbe = { S.frames + 1, S.frames + 120, S.frames + 360 }
     if CFG.device == "gamepad" and not CFG.p2_controller_confirmed then S.detectPending = true end
   else
+    -- вещь в руках героя при передаче его ИИ игра «роняет» (потом её не
+    -- достать или игра падает) — сначала убираем её, как кнопкой
+    if S.real and valid(S.buddy) and not S.handsFreeOK and S.p1EquipAbility(S.buddy) then
+      S.withHandsFree(S.buddy, function() S.handsFreeOK = true; pcall(setCoop, false); S.handsFreeOK = nil end, "перед передачей героя ИИ")
+      return
+    end
     S.coop, S.resumeCoop, S.drag, S.cbox = false, false, nil, nil
     releaseBuddy()
     resetBuddyInput()
@@ -2301,10 +2309,11 @@ end
 -- время подсадки игра эту вещь уничтожает, а потом при попытке её достать
 -- падает. Поэтому перед подсадкой вещь убираем, как это делает сам игрок,
 -- а после подсадки достаём снова.
-S.p1HeldItem = function()
+S.p1HeldItem = function(hero)
+  hero = hero or S.p1
   local it, known = nil, false
   pcall(function()
-    local k = S.p1:GetFullName()
+    local k = hero:GetFullName()
     if S.heldItem and S.heldItem[k] ~= nil then known = true; it = S.heldItem[k] end
     if S.heldItem and S.heldItemKnown and S.heldItemKnown[k] then known = true end
   end)
@@ -2313,7 +2322,7 @@ S.p1HeldItem = function()
   -- до первого «достал/убрал» спрашиваем саму вещь: в руках ли она
   for _, rec in pairs(S.itemOwners or {}) do
     local found = nil
-    pcall(function() if valid(rec.a) and rec.owner == S.p1 and rec.a:IsInUse() == true then found = rec.a end end)
+    pcall(function() if valid(rec.a) and rec.owner == hero and rec.a:IsInUse() == true then found = rec.a end end)
     if found then return found end
   end
   return nil
@@ -2322,11 +2331,12 @@ end
 -- Игра прячет вещь на пояс чуть позже события «убрал»; если в этот момент
 -- героя забирает ИИ, игра считает вещь брошенной: она теряет владельца,
 -- улетает с героя, а при попытке её достать игра падает.
-S.p1UnhiddenItems = function()
+S.p1UnhiddenItems = function(hero)
+  hero = hero or S.p1
   local out = {}
   for _, rec in pairs(S.itemOwners or {}) do
     pcall(function()
-      if valid(rec.a) and rec.owner == S.p1 and rec.a.bHidden == false then
+      if valid(rec.a) and rec.owner == hero and rec.a.bHidden == false then
         local seen = S.toolSeenOut and S.toolSeenOut[rec.a:GetFullName()]
         local inUse = false; pcall(function() inUse = rec.a:IsInUse() == true end)
         if seen or inUse then out[#out + 1] = rec.a end
@@ -2334,6 +2344,29 @@ S.p1UnhiddenItems = function()
     end)
   end
   return out
+end
+-- Сделать fn, когда у героя пустые руки. Если вещь в руках — «нажимаем»
+-- кнопку «убрать» и ждём, пока игра её спрячет (не дольше 3 с).
+S.withHandsFree = function(hero, fn, why)
+  local ga = valid(hero) and S.p1EquipAbility(hero) or nil
+  if not ga then fn(); return end
+  if S.handsFree then return end
+  local ok, e = S.gaPress(ga)
+  trail(string.format("%s: у %s в руках вещь — нажимаю за игрока «убрать» (%s)", why or "передача героя", heroName(hero), ok and "ок" or tostring(e)))
+  S.handsFree = { hero = hero, ga = ga, fn = fn, at = S.frames, why = why }
+end
+S.handsFreeTick = function()
+  local h = S.handsFree; if not h then return end
+  local active = false
+  pcall(function() active = valid(h.ga) and h.ga.bIsActive == true end)
+  local hidden = #S.p1UnhiddenItems(h.hero) == 0
+  local done = not active and hidden and S.frames - h.at >= 10
+  if done or S.frames - h.at > 180 or S.frames < h.at then
+    S.handsFree = nil
+    trail(string.format("%s: вещь %s", h.why or "передача героя", done and "убрана — продолжаю" or "не убралась за 3 с — продолжаю как есть"))
+    local ok, e = pcall(h.fn)
+    if not ok then log("ошибка после уборки вещи: %s", tostring(e)) end
+  end
 end
 -- «Нажать кнопку» за игрока: событие способности OnPress_<GUID>(TimeWaited)
 S.gaPress = function(ga)
@@ -2365,23 +2398,28 @@ S.traceEquipAbility = function(ga)
             local d = okg and S.audioTraceArg(v) or nil
             if d and #parts < 4 then parts[#parts + 1] = d end
           end
-          trail("способность: GA_EquipTool." .. n .. (#parts > 0 and (" (" .. table.concat(parts, ", ") .. ")") or ""))
+          trail("способность: " .. cname(ga) .. "." .. n .. (#parts > 0 and (" (" .. table.concat(parts, ", ") .. ")") or ""))
         end)
       end)
     end)
   end)
 end
 -- Активная способность «экипировать вещь» героя игрока 1 (пока вещь в руках)
-S.p1EquipAbility = function()
+S.p1EquipAbility = function(hero)
+  hero = hero or S.p1
   local found = nil
   pcall(function()
-    local me = S.p1:GetAddress()
-    for _, ga in ipairs(FindAllOf("GA_EquipTool_C") or {}) do
-      if found then break end
-      pcall(function()
-        local cp = ga.CurrentPlayer
-        if valid(cp) and cp:GetAddress() == me and ga.bIsActive == true then found = ga end
-      end)
+    local me = hero:GetAddress()
+    -- фонарик/зонт держит GA_EquipTool, гаечный ключ Alone — GA_WeaponWrench;
+    -- у обеих есть своё событие нажатия «убрать» (OnPress_…)
+    for _, cls in ipairs({ "GA_EquipTool_C", "GA_WeaponWrench_C" }) do
+      for _, ga in ipairs(FindAllOf(cls) or {}) do
+        if found then break end
+        pcall(function()
+          local cp = ga.CurrentPlayer
+          if valid(cp) and cp:GetAddress() == me and ga.bIsActive == true then found = ga end
+        end)
+      end
     end
   end)
   return found
@@ -2389,14 +2427,14 @@ end
 S.boostPendingTick = function()
   local pb = S.pendingBoost; if not pb then return end
   -- ждём, пока вещь не только «убрана», но и спрятана игрой на пояс
-  local unhidden = S.p1UnhiddenItems()
+  local unhidden = S.p1UnhiddenItems(pb.hero)
   local gaActive = false
   if pb.ga then pcall(function() gaActive = valid(pb.ga) and pb.ga.bIsActive == true end) end
   if pb.ga and not gaActive and not pb.gaEndedAt then
     pb.gaEndedAt = S.frames
     trail(string.format("подсадка: способность «вещь в руках» закончилась через %.1f с", (S.frames - pb.at) / 60))
   end
-  local stashed = not gaActive and S.p1HeldItem() == nil and #unhidden == 0
+  local stashed = not gaActive and S.p1HeldItem(pb.hero) == nil and #unhidden == 0
   if stashed and not pb.stashedAt then pb.stashedAt = S.frames end
   if (stashed and S.frames - pb.stashedAt >= 10) or S.frames - pb.at > 180 then
     S.pendingBoost = nil
@@ -2406,8 +2444,8 @@ S.boostPendingTick = function()
   end
 end
 -- Разбор: что хранит инвентарь (поля-объекты и массивы) до и после подсадки
-S.invDiag = function(label)
-  if CFG.inv_trace ~= true then return end
+S.invDiag = function(label, force)
+  if CFG.inv_trace ~= true and not force then return end
   -- класс инвентаря ищем по его функции EnableItem (имя класса заранее не знаем)
   if not S.invClassName then
     pcall(function()
@@ -2457,11 +2495,36 @@ S.invDiag = function(label)
       local ow = "nil"; pcall(function() ow = valid(a.Owner) and cname(a.Owner) or "nil" end)
       local par = "nil"; pcall(function() local pa = a:GetAttachParentActor(); par = valid(pa) and cname(pa) or "nil" end)
       local d = -1; pcall(function() d = dist(a:K2_GetActorLocation(), S.p1:K2_GetActorLocation()) end)
+      local d2 = -1; pcall(function() d2 = dist(a:K2_GetActorLocation(), S.buddy:K2_GetActorLocation()) end)
+      local sock = "?"; pcall(function() sock = a.RootComponent:GetAttachSocketName():ToString() end)
       local hid = "?"; pcall(function() hid = tostring(a.bHidden) end)
       local inst = "?"; pcall(function() inst = tostring(a:GetInstigator() and cname(a:GetInstigator())) end)
-      fl[#fl + 1] = a:GetFName():ToString() .. "(" .. st .. ", владелец " .. ow .. ", прикреплён к " .. par .. string.format(", до Low %.0f см", d) .. ", скрыт " .. hid .. ", инициатор " .. inst .. ")"
+      local use = "?"; pcall(function() use = tostring(a:IsInUse()) end)
+      local th = "?"; pcall(function() th = tostring(a:GetToolHidden()) end)
+      fl[#fl + 1] = a:GetFName():ToString() .. "(" .. st .. ", владелец " .. ow .. ", прикреплён к " .. par .. " [" .. sock .. "]" .. string.format(", до Low %.0f см, до Alone %.0f см", d, d2) .. ", скрыт " .. hid .. ", ToolHidden " .. th .. ", в руках " .. use .. ", инициатор " .. inst .. ")"
     end
     out[#out + 1] = "фонарики: " .. table.concat(fl, ", ")
+  end)
+  -- вещи, лежащие в мире (то, что можно подобрать): чьи, где, подобраны ли
+  pcall(function()
+    local pk = {}
+    for _, c in ipairs(FindAllOf("KosmosInventoryItemComponent") or {}) do
+      pcall(function()
+        local a = c:GetOwner()
+        local nm = "?"; pcall(function() nm = c.ItemName.ItemName:ToString() end)
+        if nm == "?" then pcall(function() nm = tostring(c.ItemName) end) end
+        local loc = "?"; pcall(function() local v = a:K2_GetActorLocation(); loc = string.format("%.0f %.0f %.0f", v.X, v.Y, v.Z) end)
+        local par = "nil"; pcall(function() local pa = a:GetAttachParentActor(); par = valid(pa) and cname(pa) or "nil" end)
+        local d = -1; pcall(function() d = dist(a:K2_GetActorLocation(), S.p1:K2_GetActorLocation()) end)
+        local d2 = -1; pcall(function() d2 = dist(a:K2_GetActorLocation(), S.buddy:K2_GetActorLocation()) end)
+        local hid = "?"; pcall(function() hid = tostring(a.bHidden) end)
+        local col = "?"; pcall(function() col = tostring(c.IsItemCollected) end)
+        local phys = "?"; pcall(function() phys = tostring(a.ItemMesh:IsSimulatingPhysics()) end)
+        local use = "?"; pcall(function() use = tostring(a.CarriableUsage) end)
+        pk[#pk + 1] = string.format("%s (подобрана %s, скрыта %s, физика %s, состояние %s, прикреплена к %s, место %s, до Low %.0f, до Alone %.0f)", cname(a), col, hid, phys, use, par, loc, d, d2)
+      end)
+    end
+    out[#out + 1] = "вещи в мире: " .. table.concat(pk, ", ")
   end)
   for _, comp in ipairs(FindAllOf(S.invClassName or "InventoryComponent") or {}) do
     pcall(function()
@@ -2972,36 +3035,36 @@ S.boostInput = function()
   -- то начинали, то сразу отменяли подсадку, и каждый раз героя забирали у
   -- игрока и возвращали — в погоне это роняло игру
   local HOLD = CFG.boost_hold_frames or 24
-  if S.rbHeld1 == HOLD then
-    local spot = S.nearestBoostTo(S.p1)
-    local ga = (spot and CFG.boost_stash ~= false) and S.p1EquipAbility() or nil
-    local item = (spot and CFG.boost_stash ~= false) and S.p1HeldItem() or nil
-    if ga then
-      -- вещь в руках держит способность игры «экипировать» (GA_EquipTool).
-      -- Убираем вещь её же командой PutAway — ровно то, что делает кнопка.
-      -- Если убрать вещь мимо способности (ReleaseItem), способность
-      -- остаётся активной, и при передаче героя ИИ игра её обрывает и
-      -- «роняет» вещь — потом при попытке достать фонарик игра падает.
-      S.traceEquipAbility(ga)
-      -- нажатие кнопки способность получает через своё событие OnPress_…
-      -- (его вызывает задача «ждать нажатия»). Вызываем его сами — это и есть
-      -- нажатие кнопки, со всеми шагами, которые игра делает дальше.
-      local ok, e = S.gaPress(ga)
-      trail("подсадка: у Low в руках вещь — нажимаю за игрока «убрать» (" .. (ok and "ок" or tostring(e)) .. ")")
-      S.pendingBoost = { hero = S.p1, owner = S.pc1, spot = spot, at = S.frames, ga = ga }
-    elseif spot and (item or #S.p1UnhiddenItems() > 0) then
-      local gl = {}
-      pcall(function()
-        for _, g in ipairs(FindAllOf("GA_EquipTool_C") or {}) do
-          pcall(function() gl[#gl + 1] = cname(g.CurrentPlayer) .. "/" .. tostring(g.bIsActive) .. "/" .. cname(g.CurrentTool) end)
-        end
-      end)
-      trail("подсадка: вещь Low ещё убирается — жду, пока спрячется (в руках=" .. cname(item) .. ", способности: " .. table.concat(gl, ", ") .. ")")
-      S.pendingBoost = { hero = S.p1, owner = S.pc1, spot = spot, at = S.frames }
-    elseif spot then S.boostStart(S.p1, S.pc1, spot) end
-  elseif S.rbHeld2 == HOLD then
-    local spot = S.nearestBoostTo(S.buddy)
-    if spot then S.boostStart(S.buddy, S.pc2, spot) end
+  if S.rbHeld1 == HOLD then S.tryBoost(S.p1, S.pc1, "Low")
+  elseif S.rbHeld2 == HOLD then S.tryBoost(S.buddy, S.pc2, "Alone") end
+end
+-- Начать подсадку героем hero. Если у него в руках вещь (фонарик, ключ),
+-- сначала убираем её: при передаче героя ИИ игра обрывает способность
+-- «вещь в руках» и «роняет» вещь — потом при попытке её достать или
+-- использовать игра падает. Убираем «нажатием» кнопки за игрока: вызываем
+-- событие способности GA_EquipTool, которое получает она сама при нажатии.
+S.tryBoost = function(hero, owner, who)
+  local spot = S.nearestBoostTo(hero)
+  if not spot then return end
+  local stash = CFG.boost_stash ~= false
+  local ga = stash and S.p1EquipAbility(hero) or nil
+  local item = stash and S.p1HeldItem(hero) or nil
+  if ga then
+    S.traceEquipAbility(ga)
+    local ok, e = S.gaPress(ga)
+    trail("подсадка: у " .. who .. " в руках вещь — нажимаю за игрока «убрать» (" .. (ok and "ок" or tostring(e)) .. ")")
+    S.pendingBoost = { hero = hero, owner = owner, spot = spot, at = S.frames, ga = ga }
+  elseif stash and (item or #S.p1UnhiddenItems(hero) > 0) then
+    local gl = {}
+    pcall(function()
+      for _, g in ipairs(FindAllOf("GA_EquipTool_C") or {}) do
+        pcall(function() gl[#gl + 1] = cname(g.CurrentPlayer) .. "/" .. tostring(g.bIsActive) .. "/" .. cname(g.CurrentTool) end)
+      end
+    end)
+    trail("подсадка: вещь " .. who .. " ещё убирается — жду, пока спрячется (в руках=" .. cname(item) .. ", способности: " .. table.concat(gl, ", ") .. ")")
+    S.pendingBoost = { hero = hero, owner = owner, spot = spot, at = S.frames }
+  else
+    S.boostStart(hero, owner, spot)
   end
 end
 
@@ -4337,6 +4400,7 @@ end
 local function Tick()
   TICKS = TICKS + 1
   S.frames = S.frames + 1
+  if S.handsFree then pcall(S.handsFreeTick) end
   -- первые 10 с после загрузки уровня — отметки шагов (если игра упадёт,
   -- последняя отметка в trail.txt покажет, на каком шаге)
   local crumb = S.crumbUntil and S.frames < S.crumbUntil and S.frames % 30 == 0
@@ -4520,4 +4584,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.12 загружен. F9 — меню кооператива")
+log("v9.13 загружен. F9 — меню кооператива")
