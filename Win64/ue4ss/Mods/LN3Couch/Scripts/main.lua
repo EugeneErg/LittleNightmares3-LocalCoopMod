@@ -1,4 +1,4 @@
--- LN3Couch v9.12.1 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.12.2 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -1696,12 +1696,18 @@ local function setCoop(on)
     ensurePC2()
     S.real = false
     if wantReal() then
-      if registryWorks() then takeBuddy() else log("режим второго игрока недоступен — управляю через ИИ") end
+      if registryWorks() then S.withHandsFree(S.buddy, takeBuddy, "перед передачей героя игроку 2") else log("режим второго игрока недоступен — управляю через ИИ") end
     end
     toast("Игрок 2 подключён: " .. heroName(S.buddy))
     S.audioProbe = { S.frames + 1, S.frames + 120, S.frames + 360 }
     if CFG.device == "gamepad" and not CFG.p2_controller_confirmed then S.detectPending = true end
   else
+    -- вещь в руках героя при передаче его ИИ игра «роняет» (потом её не
+    -- достать или игра падает) — сначала убираем её, как кнопкой
+    if S.real and valid(S.buddy) and not S.handsFreeOK and S.p1EquipAbility(S.buddy) then
+      S.withHandsFree(S.buddy, function() S.handsFreeOK = true; pcall(setCoop, false); S.handsFreeOK = nil end, "перед передачей героя ИИ")
+      return
+    end
     S.coop, S.resumeCoop, S.drag, S.cbox = false, false, nil, nil
     releaseBuddy()
     resetBuddyInput()
@@ -2336,6 +2342,29 @@ S.p1UnhiddenItems = function(hero)
     end)
   end
   return out
+end
+-- Сделать fn, когда у героя пустые руки. Если вещь в руках — «нажимаем»
+-- кнопку «убрать» и ждём, пока игра её спрячет (не дольше 3 с).
+S.withHandsFree = function(hero, fn, why)
+  local ga = valid(hero) and S.p1EquipAbility(hero) or nil
+  if not ga then fn(); return end
+  if S.handsFree then return end
+  local ok, e = S.gaPress(ga)
+  trail(string.format("%s: у %s в руках вещь — нажимаю за игрока «убрать» (%s)", why or "передача героя", heroName(hero), ok and "ок" or tostring(e)))
+  S.handsFree = { hero = hero, ga = ga, fn = fn, at = S.frames, why = why }
+end
+S.handsFreeTick = function()
+  local h = S.handsFree; if not h then return end
+  local active = false
+  pcall(function() active = valid(h.ga) and h.ga.bIsActive == true end)
+  local hidden = #S.p1UnhiddenItems(h.hero) == 0
+  local done = not active and hidden and S.frames - h.at >= 10
+  if done or S.frames - h.at > 180 or S.frames < h.at then
+    S.handsFree = nil
+    trail(string.format("%s: вещь %s", h.why or "передача героя", done and "убрана — продолжаю" or "не убралась за 3 с — продолжаю как есть"))
+    local ok, e = pcall(h.fn)
+    if not ok then log("ошибка после уборки вещи: %s", tostring(e)) end
+  end
 end
 -- «Нажать кнопку» за игрока: событие способности OnPress_<GUID>(TimeWaited)
 S.gaPress = function(ga)
@@ -4340,6 +4369,7 @@ end
 local function Tick()
   TICKS = TICKS + 1
   S.frames = S.frames + 1
+  if S.handsFree then pcall(S.handsFreeTick) end
   -- первые 10 с после загрузки уровня — отметки шагов (если игра упадёт,
   -- последняя отметка в trail.txt покажет, на каком шаге)
   local crumb = S.crumbUntil and S.frames < S.crumbUntil and S.frames % 30 == 0
@@ -4523,4 +4553,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.12.1 загружен. F9 — меню кооператива")
+log("v9.12.2 загружен. F9 — меню кооператива")
