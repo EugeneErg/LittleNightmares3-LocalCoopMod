@@ -784,7 +784,29 @@ end
 local VIS = { hiddenFor = 0, shownFor = 0, fallback = false }
 local function insideBox(p, m) return p and p.inFront and p.x > m and p.x < 1 - m and p.y > m and p.y < 1 - m end
 
+-- Заставка (ролик на движке): героями управляет «секвенсор» игры — он
+-- проигрывает им анимацию, которую создаёт на лету (/Engine/Transient...).
+-- В обычной игре таких анимаций у героев нет. Пока она идёт и ещё 3 с после —
+-- экран не делим ни в каком режиме: два вида во время ролика роняли игру (#10).
+local function inCutscene()
+  if S.frames % 10 == 0 then
+    local now = false
+    for _, h in ipairs({ S.p1, S.buddy }) do
+      if valid(h) then
+        local ok, path = pcall(function() local m = h:GetCurrentMontage(); return valid(m) and m:GetFullName() or nil end)
+        if ok and path and path:find("/Engine/Transient", 1, true) then now = true end
+      end
+    end
+    if now then
+      if not (S.cutsceneUntil and S.frames < S.cutsceneUntil) then trail("экран: идёт заставка — экран общий") end
+      S.cutsceneUntil = S.frames + 180
+    end
+  end
+  return S.cutsceneUntil ~= nil and S.frames < S.cutsceneUntil
+end
+
 local function wantSplit()
+  if inCutscene() then return false end
   local mode = CFG.split
   if mode == "always" then return true end
   if mode == "never" then return false end
