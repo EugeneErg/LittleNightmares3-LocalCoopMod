@@ -1,4 +1,4 @@
--- LN3Couch v9.13 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.15 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -1079,6 +1079,7 @@ local function acquire()
     else pcall(function() ai:SetActorTickEnabled(false) end) end  -- контроллер без героя трогать нельзя
   end
   log("Игрок 1: %s | Игрок 2: %s", heroName(S.p1), heroName(buddy))
+  pcall(function() S.p1HeroClass = S.p1:GetClass():GetFName():ToString() end)
   return true
 end
 
@@ -1720,6 +1721,30 @@ local function setCoop(on)
   end
 end
 
+-- После смерти игра возрождает героя игрока 1 у контроллера с номером
+-- геймпада 0. Если игрок 1 играет со второго геймпада (номер 1), а игроку 2
+-- достался геймпад 0, герой игрока 1 оказывается у контроллера игрока 2 —
+-- игрок 1 «теряет» героя, экран чёрный (issue #12). Возвращаем героя игроку 1.
+S.rescueP1Hero = function()
+  local pc1 = findPC1(); if not valid(pc1) then return false end
+  local okp, own = pcall(function() return pc1.Pawn end)
+  if okp and isHero(own) then return false end
+  if not S.p1HeroClass then return false end
+  for _, pc in ipairs(FindAllOf("PlayerController") or {}) do
+    if valid(pc) and pc ~= pc1 and isLocalPC(pc) then
+      local ok, pawn = pcall(function() return pc.Pawn end)
+      if ok and isHero(pawn) and pawn:GetClass():GetFName():ToString() == S.p1HeroClass then
+        pcall(function() pc:UnPossess() end)
+        -- через safePossess: без лишней записи в реестре персонажей игры
+        local okP = safePossess(pc1, pawn, "вернуть героя игроку 1 после возрождения")
+        log("после возрождения герой игрока 1 оказался у контроллера %s — вернул игроку 1 (%s)", tostring(pcId(pc)), okP and "ok" or "ошибка")
+        return okP
+      end
+    end
+  end
+  return false
+end
+
 -- Кооператив «на паузе» на время выхода в меню/загрузки: второй вид убран,
 -- экран не разделён; когда снова появятся оба героя — всё включится само.
 suspendCoop = function(reason)
@@ -1732,7 +1757,11 @@ suspendCoop = function(reason)
   local keep = findPC1()
   for _, pc in ipairs(FindAllOf("PlayerController") or {}) do
     local id = pcId(pc)
-    if valid(pc) and id and pc ~= keep and isLocalPC(pc) then
+    local okh, hp = pcall(function() return pc.Pawn end)
+    if valid(pc) and id and pc ~= keep and isLocalPC(pc) and okh and isHero(hp) then
+      -- у этого «лишнего» игрока герой — убирать его нельзя (экран стал бы чёрным)
+      log("не убираю игрока (контроллер %d): у него герой %s", id, heroName(hp))
+    elseif valid(pc) and id and pc ~= keep and isLocalPC(pc) then
       pcall(function() pc:UnPossess() end)
       pcall(function() UEHelpers.GetGameplayStatics():RemovePlayer(pc, false) end)
       log("убран лишний игрок (контроллер %d)", id)
@@ -4458,6 +4487,7 @@ local function Tick()
   if not S.coop then return end
   if not (valid(S.pc1) and valid(S.p1) and valid(S.buddy) and buddyOwned()) then
     S.lostFrames = (S.lostFrames or 0) + 1
+    if S.frames % 30 == 15 then pcall(S.rescueP1Hero) end
     if S.frames % 60 == 0 and acquire() then
       -- подсадка, прерванная смертью: ИИ-контроллер и камера игрока 1 остались
       -- в «режиме подсадки» — возвращаем всё как было
@@ -4584,4 +4614,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.13 загружен. F9 — меню кооператива")
+log("v9.15 загружен. F9 — меню кооператива")
