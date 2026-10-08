@@ -788,7 +788,7 @@ local function insideBox(p, m) return p and p.inFront and p.x > m and p.x < 1 - 
 -- проигрывает им анимацию, которую создаёт на лету (/Engine/Transient...).
 -- В обычной игре таких анимаций у героев нет. Пока она идёт и ещё 3 с после —
 -- экран не делим ни в каком режиме: два вида во время ролика роняли игру (#10).
-local function inCutscene()
+S.inCutscene = function()
   if S.frames % 10 == 0 then
     local now = false
     for _, h in ipairs({ S.p1, S.buddy }) do
@@ -806,7 +806,7 @@ local function inCutscene()
 end
 
 local function wantSplit()
-  if inCutscene() then return false end
+  if S.inCutscene() then return false end
   local mode = CFG.split
   if mode == "always" then return true end
   if mode == "never" then return false end
