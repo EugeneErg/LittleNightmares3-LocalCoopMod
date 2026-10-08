@@ -1,4 +1,4 @@
--- LN3Couch v9.13 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.14 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -784,7 +784,29 @@ end
 local VIS = { hiddenFor = 0, shownFor = 0, fallback = false }
 local function insideBox(p, m) return p and p.inFront and p.x > m and p.x < 1 - m and p.y > m and p.y < 1 - m end
 
+-- Заставка (ролик на движке): героями управляет «секвенсор» игры — он
+-- проигрывает им анимацию, которую создаёт на лету (/Engine/Transient...).
+-- В обычной игре таких анимаций у героев нет. Пока она идёт и ещё 3 с после —
+-- экран не делим ни в каком режиме: два вида во время ролика роняли игру (#10).
+S.inCutscene = function()
+  if S.frames % 10 == 0 then
+    local now = false
+    for _, h in ipairs({ S.p1, S.buddy }) do
+      if valid(h) then
+        local ok, path = pcall(function() local m = h:GetCurrentMontage(); return valid(m) and m:GetFullName() or nil end)
+        if ok and path and path:find("/Engine/Transient", 1, true) then now = true end
+      end
+    end
+    if now then
+      if not (S.cutsceneUntil and S.frames < S.cutsceneUntil) then trail("экран: идёт заставка — экран общий") end
+      S.cutsceneUntil = S.frames + 180
+    end
+  end
+  return S.cutsceneUntil ~= nil and S.frames < S.cutsceneUntil
+end
+
 local function wantSplit()
+  if S.inCutscene() then return false end
   local mode = CFG.split
   if mode == "always" then return true end
   if mode == "never" then return false end
@@ -814,7 +836,8 @@ local function wantSplit()
       local q = full(p)
       -- игра может развернуть камеру игрока 1 к напарнику (колесо, рычаг): тогда
       -- напарник в кадре, а сам игрок 1 — нет. Объединяем, только если в кадре оба.
-      local q1 = full(buddyScreenPos(S.p1))
+      local raw1 = buddyScreenPos(S.p1)
+      local q1 = full(raw1)
       local p1In = q1 == nil or insideBox(q1, 0.05)
       -- объединяем, когда герои в одной комнате и напарник уверенно в кадре,
       -- или когда они просто стоят рядом (тогда комнаты не важны)
@@ -824,6 +847,16 @@ local function wantSplit()
         dh = math.sqrt((a.X - b.X) ^ 2 + (a.Y - b.Y) ^ 2); dz = math.abs(a.Z - b.Z)
         close = dh < (CFG.merge_distance or 450) and dz < 200
       end)
+      -- ролик: камера игры смотрит в сторону (зеркало, катсцена) — в её кадре нет
+      -- НИ ОДНОГО героя, а сами герои рядом. Делить тут нечего, а два вида во
+      -- время ролика роняли игру (issue #10, сцена с зеркалом) — объединяем.
+      local cutscene = close and not (p and p.inFront) and not (raw1 and raw1.inFront)
+      if cutscene then
+        if not VIS.cutLogged then VIS.cutLogged = true; trail("экран: в кадре нет ни одного героя, а они рядом (ролик) — объединяю") end
+        VIS.shownFor = math.max(VIS.shownFor, 15)
+        return false
+      end
+      VIS.cutLogged = false
       -- в разных комнатах экран всегда разделён, как бы близко герои ни стояли
       if diffRooms or (VIS.sameFor or 0) < 20 then VIS.shownFor = 0
       elseif not p1In then VIS.shownFor = 0
@@ -840,6 +873,19 @@ local function wantSplit()
     else
       local p1 = buddyScreenPos(S.p1)
       local p1Out = p1 ~= nil and not insideBox(p1, 0.0)
+      -- ролик: в кадре камеры игры нет ни одного героя, а они рядом — не делим
+      -- (камера смотрит в сторону, например в зеркало; issue #10)
+      local close = false
+      pcall(function()
+        local a, b = S.p1:K2_GetActorLocation(), S.buddy:K2_GetActorLocation()
+        close = math.sqrt((a.X - b.X) ^ 2 + (a.Y - b.Y) ^ 2) < (CFG.merge_distance or 450) and math.abs(a.Z - b.Z) < 200
+      end)
+      if close and not (p and p.inFront) and not (p1 and p1.inFront) then
+        if not VIS.cutLogged then VIS.cutLogged = true; trail("экран: в кадре нет ни одного героя, а они рядом (ролик) — не делю") end
+        VIS.hiddenFor = 0
+        return false
+      end
+      VIS.cutLogged = false
       if insideBox(p, 0.04) and not p1Out then VIS.hiddenFor = 0 else VIS.hiddenFor = VIS.hiddenFor + 1 end
       -- делим, если напарник ушёл из кадра или в другую комнату
       return VIS.hiddenFor >= 20 or VIS.diffFor >= 20
@@ -4584,4 +4630,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.13 загружен. F9 — меню кооператива")
+log("v9.14 загружен. F9 — меню кооператива")
