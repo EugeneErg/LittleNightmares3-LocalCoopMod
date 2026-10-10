@@ -1,4 +1,4 @@
--- LN3Couch v9.16 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.17 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -1633,9 +1633,30 @@ local function keepListener()
 end
 -- Герои всегда считают свою анимацию, даже если их «не видно» в кадре
 -- (иначе в разделённом экране герой мог скользить без анимации).
+-- v9.17: и все остальные «скелетные» части героя (у героя их несколько, а
+-- вид второго игрока игра может не считать «видом»), и без прореживания
+-- анимации по расстоянию — второй игрок иногда скользил, не шагая.
 S.keepAnimating = function()
   for _, h in ipairs({ S.p1, S.buddy }) do
-    if valid(h) then pcall(function() h.Mesh.VisibilityBasedAnimTickOption = 0 end) end
+    if valid(h) then
+      local meshes = {}
+      pcall(function() meshes[#meshes + 1] = h.Mesh end)
+      pcall(function()
+        local cls = StaticFindObject("/Script/Engine.SkeletalMeshComponent")
+        local arr = h:K2_GetComponentsByClass(cls)
+        if type(arr) == "table" then for _, c in ipairs(arr) do meshes[#meshes + 1] = c end
+        elseif arr then arr:ForEach(function(_, e) meshes[#meshes + 1] = e:get() end) end
+      end)
+      for _, m in ipairs(meshes) do
+        pcall(function()
+          if valid(m) then
+            m.VisibilityBasedAnimTickOption = 0
+            m.bEnableUpdateRateOptimizations = false
+            m.bNoSkeletonUpdate = false
+          end
+        end)
+      end
+    end
   end
 end
 local function takeBuddy()
@@ -4578,7 +4599,7 @@ local function Tick()
   if S.frames % 120 == 60 then pcall(S.ambienceTick) end
   if S.audioProbe and S.coop then pcall(S.audioProbeTick) end
   if S.coop and not S.boost and S.frames % 30 == 20 then pcall(S.fixItemOwners, "проверка"); if S.frames % 600 == 20 then pcall(S.snapshotItemOwners, "обновление") end end
-  if S.frames % 120 == 30 then pcall(S.keepAnimating) end
+  if S.frames % 60 == 30 then pcall(S.keepAnimating) end
 
   if S.frames % 120 == 0 then pcall(dedupeRegistry, "проверка") end
   if S.boost and S.boost.hero == S.buddy then
@@ -4663,4 +4684,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.16 загружен. F9 — меню кооператива")
+log("v9.17 загружен. F9 — меню кооператива")
