@@ -26,7 +26,7 @@ Little Nightmares III only offers online co-op. LN3Couch lets a second person on
 
 ### Camera and screen
 - **Shared screen that frames both players.** When you are together, the game's own camera takes both heroes into account, not just Player 1.
-- **Split screen when you need it.** When you are in different rooms, or Player 2 leaves Player 1's view, the screen splits. Walk back together and it merges again.
+- **Split screen when you need it.** The screen splits when Player 2 leaves Player 1's view (at once if they are in another room). While Player 2 is in view, the screen stays shared, even across parts of the same room. Walk back together and it merges again.
 - **Smart split direction.** The split follows where the heroes are, like in *Split Fiction*: side by side splits left/right, one above the other splits top/bottom, and each player gets the half on their own side. Prefer a fixed layout? Switch it to always top/bottom.
 - **No black bars.** Each half of the split screen is filled edge to edge.
 - **Room-aware camera for Player 2.** On the split screen, Player 2's camera follows the same per-room rules as the game's camera: set angles, room bounds, smooth transitions.

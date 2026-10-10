@@ -1,4 +1,4 @@
--- LN3Couch v9.15 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.16 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -857,9 +857,10 @@ local function wantSplit()
         return false
       end
       VIS.cutLogged = false
-      -- в разных комнатах экран всегда разделён, как бы близко герои ни стояли
-      if diffRooms or (VIS.sameFor or 0) < 20 then VIS.shownFor = 0
-      elseif not p1In then VIS.shownFor = 0
+      -- v9.16: «комната» тут — зона камеры игры, а в одной комнате их бывает
+      -- несколько. Поэтому разные зоны объединению не мешают: решает, видно ли
+      -- напарника в кадре (и самого игрока 1)
+      if not p1In then VIS.shownFor = 0
       elseif close then VIS.shownFor = VIS.shownFor + 2
       elseif insideBox(q, 0.05) then VIS.shownFor = VIS.shownFor + 1
       else VIS.shownFor = math.max(0, VIS.shownFor - 2) end     -- короткие «выпадения» не сбрасывают счёт
@@ -887,8 +888,10 @@ local function wantSplit()
       end
       VIS.cutLogged = false
       if insideBox(p, 0.04) and not p1Out then VIS.hiddenFor = 0 else VIS.hiddenFor = VIS.hiddenFor + 1 end
-      -- делим, если напарник ушёл из кадра или в другую комнату
-      return VIS.hiddenFor >= 20 or VIS.diffFor >= 20
+      -- v9.16: делим, только если напарник ушёл из кадра; если он при этом в
+      -- другой зоне камеры (скорее всего, в другой комнате) — сразу, без ожидания
+      if VIS.hiddenFor == 0 then return false end
+      return VIS.hiddenFor >= 20 or (diffRooms and VIS.hiddenFor >= 3)
     end
   end
   local ok, d = pcall(function() return S.p1:GetDistanceTo(S.buddy) end)
@@ -4660,4 +4663,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.15 загружен. F9 — меню кооператива")
+log("v9.16 загружен. F9 — меню кооператива")
