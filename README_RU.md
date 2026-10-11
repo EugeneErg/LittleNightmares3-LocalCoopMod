@@ -11,8 +11,9 @@
 **Одна игра, один аккаунт Steam.** Не нужны вторая копия игры, второй аккаунт и два окна игры: мод добавляет второго игрока в одну запущенную игру.
 
 [English version](README.md)
-
-<img width="2347" height="1599" alt="image" src="https://github.com/user-attachments/assets/6bf9eb98-8f4a-418d-9262-b6458ccc2398" />
+<img width="1280" height="718" src="https://github.com/user-attachments/assets/1af08fd1-1b58-4cb2-bbb2-ecde16355e61" />
+<img width="1280" height="908" src="https://github.com/user-attachments/assets/69926909-89e2-4d54-bc4e-b998f7563524" />
+<img width="1279" height="902" src="https://github.com/user-attachments/assets/86a859ca-f87c-4e8a-a579-5a223a7ed6e1" />
 
 ---
 
