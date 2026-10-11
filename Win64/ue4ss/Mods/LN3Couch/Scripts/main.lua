@@ -1,4 +1,4 @@
--- LN3Couch v9.15.1 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.15.2 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -426,13 +426,38 @@ local function createPC2()
   if ok then return pc end
 end
 
+-- v9.15.2: лишние «локальные игроки». После «выхода из уровня» и быстрого
+-- возобновления старый второй игрок иногда остаётся, и мод создаёт ещё
+-- одного — их становится трое. При разделении экран берёт первых двух из
+-- списка, и во второй половине оказывается старый вид (на обеих половинах
+-- был первый игрок). Оставляем только игрока 1 и нашего второго.
+S.pruneLocalPlayers = function(keep2, why)
+  local removed = 0
+  for _, pc in ipairs(FindAllOf("PlayerController") or {}) do
+    if valid(pc) and pc ~= S.pc1 and pc ~= keep2 and isLocalPC(pc) then
+      local okh, hp = pcall(function() return pc.Pawn end)
+      if okh and isHero(hp) then
+        log("лишний игрок (контроллер %s) с героем %s — не трогаю", tostring(pcId(pc)), heroName(hp))
+      else
+        local id = pcId(pc)
+        pcall(function() pc:UnPossess() end)
+        pcall(function() UEHelpers.GetGameplayStatics():RemovePlayer(pc, false) end)
+        removed = removed + 1
+        log("убран лишний игрок (контроллер %s) — %s", tostring(id), why)
+      end
+    end
+  end
+  return removed
+end
 local function ensurePC2()
   if usablePC2(S.pc2) then return true end
   S.pc2 = nil
   local existing
   for _, pc in ipairs(FindAllOf("PlayerController") or {}) do
-    if valid(pc) and pc ~= S.pc1 and isLocalPC(pc) then existing = pc end
+    if valid(pc) and pc ~= S.pc1 and isLocalPC(pc) and not existing and usablePC2(pc) then existing = pc end
   end
+  -- если «вторых» несколько — оставляем одного
+  pcall(S.pruneLocalPlayers, existing, "второй уже есть")
   S.pc2 = usablePC2(existing) and existing or createPC2()
   if not usablePC2(S.pc2) then log("не удалось создать вид для игрока 2"); S.pc2 = nil; return false end
   local stolen = S.pc2.Pawn
@@ -618,6 +643,22 @@ local function roomCamTarget()
     end
   end
   if not valid(RC.cur) then return nil end
+  -- v9.15.2: если для Alone выбрана та же камера комнаты, что сейчас у Low,
+  -- вторая половина показывала то же, что первая (на обеих — Low). Тогда
+  -- ведём вторую камеру за героем, как у игрока 1, а не комнатной камерой.
+  if S.frames >= (RC.p1At or 0) then
+    RC.p1At = S.frames + 10
+    local okl, l1 = pcall(function() return S.p1:K2_GetActorLocation() end)
+    RC.p1cur = nil
+    if okl then pcall(function() RC.p1cur = pickRoomCam(l1) end) end
+  end
+  if valid(RC.p1cur) and RC.p1cur == RC.cur then
+    if not RC.sameAt or S.frames - RC.sameAt > 600 then
+      RC.sameAt = S.frames
+      pcall(function() trail("вторая камера: у Alone та же камера комнаты, что у Low (" .. RC.cur:GetFName():ToString() .. ") — веду камеру за Alone") end)
+    end
+    return nil
+  end
   local ok, loc, rot, fov = pcall(roomCamPose, RC.cur, p)
   if not ok then
     if not RC.errLogged then RC.errLogged = true; log("комнатная камера: ошибка %s", tostring(loc)) end
@@ -1092,13 +1133,49 @@ local function updateSplit()
   S.splitChangedAt = now()
   if want then
     if not S.nativeCam then
+      -- v9.15.2: в момент разделения сразу берём камеру комнаты, где стоит
+      -- Alone (без «липкой» прежней) — иначе первую секунду показывалась
+      -- камера комнаты Low, а потом картинка перескакивала
+      RC.cur, RC.pickAt, RC.pending, RC.pendingAt, RC.pendingFor = nil, 0, nil, nil, 0
       S.camSnap = true; updateCam2Pose(); setFastExposure(true); S.exposureResetAt = S.frames + 120
       try("pc2 ViewTarget", function() S.pc2:SetViewTargetWithBlend(S.cam2, 0, 0, 0, false) end)
     end
   end
   VIS.hiddenFor, VIS.shownFor = 0, 0
   -- каждый игрок — на своей половине (выключается split_swap_sides = false)
-  if want then pcall(S.decideSplitSides); if CFG.split_swap_sides ~= false then pcall(S.setPlayerOrder, S.p2First) end end
+  if want then
+    pcall(function()
+      local n = 0; local arr = S.localPlayers(); if arr then n = arr:GetArrayNum() end
+      if n > 2 then
+        local parts = {}
+        for i = 1, n do
+          pcall(function()
+            local lp = arr[i]; local pc = lp.PlayerController
+            parts[#parts + 1] = string.format("%d: контроллер %s%s", i, tostring(lp.ControllerId), (pc == S.pc1 and " (игрок 1)") or (pc == S.pc2 and " (игрок 2)") or (valid(pc) and " (лишний)") or " (без контроллера)")
+          end)
+        end
+        trail(string.format("экран: локальных игроков %d вместо 2 (%s) — убираю лишних", n, table.concat(parts, ", ")))
+        S.pruneLocalPlayers(S.pc2, "перед разделением экрана")
+      end
+    end)
+    pcall(S.decideSplitSides); if CFG.split_swap_sides ~= false then pcall(S.setPlayerOrder, S.p2First) end
+    -- разбор: куда смотрит вторая камера в момент разделения
+    pcall(function()
+      local function nm(a) return valid(a) and a:GetFName():ToString() or "нет" end
+      local cl, cr = S.cam2:K2_GetActorLocation(), S.cam2:K2_GetActorRotation()
+      local function off(t)
+        local yaw, pitch = math.rad(cr.Yaw), math.rad(cr.Pitch)
+        local fx, fy, fz = math.cos(pitch) * math.cos(yaw), math.cos(pitch) * math.sin(yaw), math.sin(pitch)
+        local dx, dy, dz = t.X - cl.X, t.Y - cl.Y, t.Z - cl.Z
+        local len = math.max(math.sqrt(dx * dx + dy * dy + dz * dz), 1)
+        return math.deg(math.acos(math.max(-1, math.min(1, (fx * dx + fy * dy + fz * dz) / len))))
+      end
+      local bl, pl = S.buddy:K2_GetActorLocation(), S.p1:K2_GetActorLocation()
+      local vt = nil; pcall(function() vt = S.pc2:GetViewTarget() end)
+      trail(string.format("вторая камера при разделении: комната %s (у Low %s), до Alone %.0f см, Alone от центра %.0f°, Low от центра %.0f°, вид игрока 2 = %s",
+        nm(RC.cur), nm(RC.p1cur), dist(cl, bl), off(bl), off(pl), vt == S.cam2 and "наша камера" or clsName(vt)))
+    end)
+  end
   setSplitVisible(want)
   pcall(S.applySplitAspect, want)
   if not want then S.splitLR, S.p2First = nil, false end
@@ -1673,9 +1750,42 @@ local function keepListener()
 end
 -- Герои всегда считают свою анимацию, даже если их «не видно» в кадре
 -- (иначе в разделённом экране герой мог скользить без анимации).
+-- v9.17: и все остальные «скелетные» части героя (у героя их несколько, а
+-- вид второго игрока игра может не считать «видом»), и без прореживания
+-- анимации по расстоянию — второй игрок иногда скользил, не шагая.
 S.keepAnimating = function()
   for _, h in ipairs({ S.p1, S.buddy }) do
-    if valid(h) then pcall(function() h.Mesh.VisibilityBasedAnimTickOption = 0 end) end
+    if valid(h) then
+      local meshes = {}
+      pcall(function() meshes[#meshes + 1] = h.Mesh end)
+      pcall(function()
+        local cls = StaticFindObject("/Script/Engine.SkeletalMeshComponent")
+        local arr = h:K2_GetComponentsByClass(cls)
+        if type(arr) == "table" then for _, c in ipairs(arr) do meshes[#meshes + 1] = c end
+        elseif arr then arr:ForEach(function(_, e) meshes[#meshes + 1] = e:get() end) end
+      end)
+      for _, m in ipairs(meshes) do
+        pcall(function()
+          if valid(m) then
+            -- v9.15.2: пишем в лог, если игра снова выключила анимацию героя
+            -- (по этим строкам видно, повторилась ли «скользящая походка»)
+            local was, uro = nil, nil
+            pcall(function() was = m.VisibilityBasedAnimTickOption; uro = m.bEnableUpdateRateOptimizations end)
+            if (was ~= nil and was ~= 0) or uro == true then
+              S.animLogAt = S.animLogAt or {}
+              local k = heroName(h) .. cname(m)
+              if not S.animLogAt[k] or S.frames - S.animLogAt[k] > 600 then
+                S.animLogAt[k] = S.frames
+                trail(string.format("анимация героя %s (%s): игра выключала (режим %s, прореживание %s) — включил", heroName(h), cname(m), tostring(was), tostring(uro)))
+              end
+            end
+            m.VisibilityBasedAnimTickOption = 0
+            m.bEnableUpdateRateOptimizations = false
+            m.bNoSkeletonUpdate = false
+          end
+        end)
+      end
+    end
   end
 end
 local function takeBuddy()
@@ -2701,8 +2811,47 @@ S.invDiag = function(label, force)
   end
   trail("инвентарь (" .. label .. "): " .. table.concat(out, " || "))
 end
+-- v9.15.2: РАЗБОР «СКОЛЬЗЯЩЕЙ ПОХОДКИ». Состояние анимации героя: скорость,
+-- монтаж, ускорение, пауза анимации — и «переменные» его анимационного
+-- блюпринта (снимок до и после подсадки, при F8 — сравнение со снимком).
+S.animState = function(h)
+  local t = {}
+  pcall(function() local v = h:GetVelocity(); t[#t + 1] = string.format("скорость %.0f", math.sqrt(v.X * v.X + v.Y * v.Y)) end)
+  pcall(function() local a = h.CharacterMovement:GetCurrentAcceleration(); t[#t + 1] = string.format("ускорение %.0f", math.sqrt(a.X * a.X + a.Y * a.Y)) end)
+  pcall(function() t[#t + 1] = "режим " .. tostring(h.CharacterMovement.MovementMode) end)
+  pcall(function() local m = h:GetCurrentMontage(); t[#t + 1] = "монтаж " .. (valid(m) and m:GetFName():ToString() or "нет") end)
+  pcall(function() t[#t + 1] = "у " .. clsName(h.Controller) end)
+  pcall(function()
+    local m = h.Mesh
+    t[#t + 1] = string.format("пауза %s, темп %.2f, тик %s, скелет-стоп %s", tostring(m.bPauseAnims), m.GlobalAnimRateScale or -1, tostring(m.VisibilityBasedAnimTickOption), tostring(m.bNoSkeletonUpdate))
+    local ai = m:GetAnimInstance()
+    t[#t + 1] = "аним " .. (valid(ai) and cname(ai) or "нет")
+  end)
+  return table.concat(t, ", ")
+end
+S.animSnapOf = function(h)
+  local res = {}
+  pcall(function()
+    local ai = h.Mesh:GetAnimInstance()
+    if not valid(ai) then return end
+    for k, v in pairs(S.propSnap(ai)) do
+      if not tostring(v):find("%.") then res[k] = v end   -- без дробных чисел: ищем «застрявшие» флаги и состояния
+    end
+  end)
+  return res
+end
+S.animDiff = function(h, base, label)
+  if not base then return end
+  local cur = S.animSnapOf(h)
+  local ch = {}
+  for k, v in pairs(cur) do if base[k] ~= nil and base[k] ~= v then ch[#ch + 1] = k .. ": " .. tostring(base[k]) .. "→" .. tostring(v) end end
+  table.sort(ch)
+  trail(string.format("анимация %s %s: %s | изменилось: %s", heroName(h), label, S.animState(h), #ch > 0 and table.concat(ch, "; ", 1, math.min(#ch, 40)) or "ничего"))
+end
 S.boostEnd = function(reason)
   local b = S.boost; if not b then return end
+  -- разбор: через 1,5 с после подсадки сравним анимацию героев со снимком до неё
+  S.animCheckAt = S.frames + 90
   S.boost = nil
   -- не переключать героя туда-обратно слишком часто; после совсем короткой
   -- (сорвавшейся) подсадки ждём дольше
@@ -3058,6 +3207,9 @@ S.enemyInfo = function()
   return #out > 0 and table.concat(out, "; ") or "рядом никого"
 end
 S.boostStart = function(hero, owner, spot)
+  pcall(function() S.animPre = { [1] = S.animSnapOf(S.p1), [2] = S.animSnapOf(S.buddy) } end)
+  if not S.animBase then S.animBase = S.animPre end
+  S.hadBoost = true
   if not (valid(S.ai) and valid(hero) and valid(owner)) then log("подсадка: нет ИИ-контроллера"); return false end
   pcall(function() trail("камера 1 перед подсадкой: " .. S.cam1Info()) end)
   pcall(function() trail("герои перед подсадкой: " .. S.killDiag()) end)
@@ -3581,6 +3733,123 @@ S.propDiff = function(obj, key, tag)
   end
   if #ch > 0 then table.sort(ch); trail(tag .. ": " .. table.concat(ch, "; ")) end
 end
+S.buddyHidden = function()
+  local hid = false
+  pcall(function()
+    for _, c in ipairs(S.buddy:K2_GetComponentsByClass(StaticFindObject("/Script/Kosmos.KosmosCharacterToAntagonist")) or {}) do
+      if c:IsHiddenToAntagonist() then hid = true end
+    end
+  end)
+  return hid
+end
+S.chaseTick = function(en, key, cn, dA, zA, dL, zL)
+  local E = S.enemy
+  E.ch = E.ch or {}
+  local st = E.ch[key] or {}; E.ch[key] = st
+  local bb = en.Controller.Blackboard
+  if not valid(bb) then return end
+  local who = function(o) return (o == S.p1 and "Low") or (o == S.buddy and "Alone") or (valid(o) and cname(o)) or "пусто" end
+  local tgt = nil; pcall(function() tgt = bb:GetValueAsObject(FName("CharacterPercieved")) end)
+  -- разбор: раз в 0,5 с, если у врага что-то поменялось (цель, режимы, взгляд)
+  if S.frames - (st.logAt or -999) >= 30 then
+    st.logAt = S.frames
+    S.bbDump(en)
+    local parts = {}
+    for k, v in pairs(S.bbPairs or {}) do
+      if not v:find("^%-?%d+%.%d$") and not v:find("^%(") then parts[#parts + 1] = k .. "=" .. v end   -- без чисел и координат
+    end
+    table.sort(parts)
+    local focus = nil; pcall(function() focus = en.Controller:GetFocusActor() end)
+    local sig = table.concat(parts, ", ") .. " | взгляд " .. who(focus)
+    if sig ~= st.sig then
+      st.sig = sig
+      trail(string.format("погоня: %s (до Low %.0f, до Alone %.0f%s): %s", cn, dL, dA, S.buddyHidden() and ", Alone прячется" or "", sig))
+    end
+  end
+  -- разовый разбор «органов чувств»: что враг вообще замечает
+  if not st.percLogged and (dA < 800 or dL < 800) then
+    st.percLogged = true
+    pcall(function()
+      local pc = en.Controller.PerceptionComponent
+      local list = {}
+      pcall(function()
+        local out = {}
+        pc:GetKnownPerceivedActors(nil, out)
+        for _, a in ipairs(out) do
+          local o = a; pcall(function() if type(a.get) == "function" then o = a:get() end end)
+          list[#list + 1] = who(o)
+        end
+      end)
+      trail(string.format("погоня: %s — чувства %s, замечает: %s", cn, valid(pc) and cname(pc) or "нет", #list > 0 and table.concat(list, ", ") or "никого"))
+    end)
+    if not S.heroCompsLogged then
+      S.heroCompsLogged = true
+      for _, h in ipairs({ S.p1, S.buddy }) do
+        pcall(function()
+          local names = {}
+          local arr = h:K2_GetComponentsByClass(StaticFindObject("/Script/Engine.ActorComponent"))
+          local function add(c) pcall(function() local n = cname(c); if n:find("Percep") or n:find("Stimul") or n:find("Antagon") or n:find("Sense") or n:find("Noise") then names[#names + 1] = n end end) end
+          if type(arr) == "table" then for _, c in ipairs(arr) do add(c) end elseif arr then arr:ForEach(function(_, e) add(e:get()) end) end
+          trail(string.format("погоня: у %s для врагов: %s", heroName(h), #names > 0 and table.concat(names, ", ") or "ничего"))
+        end)
+      end
+    end
+  end
+  if CFG.enemy_retarget == false or not S.real then return end
+  local function B(n) local ok, v = pcall(function() return bb:GetValueAsBool(FName(n)) end); return ok and v == true end
+  if B("IsDead") or B("Sleeping") or B("PlayerGrabbed") or S.buddyHidden() or zA > 250 then return end
+  -- Враг «видит» только героя игрока 1 (так сделано для одиночной игры —
+  -- в логе мини-кин в 2 м от Alone её не замечал, а Low — с 3 м). Если Alone
+  -- в пределах, с которых враг замечает Low (по умолчанию 3,5 м), ближе
+  -- Low и её не загораживает стена — враг «замечает» её и гонится за ней.
+  -- Если враг уже гонится за Low, а Alone рядом и ближе на 1,5 м — тоже.
+  -- v9.15.2: ХВАТАТЬ ALONE. Враг гонится за Alone и подбежал вплотную, но
+  -- «можно атаковать» (CanAttack) игра включает только по расстоянию до Low
+  -- (в логе мини-кин стоял в 0,9–1,5 м от Alone с CanAttack=false). Пока
+  -- Alone прямо перед ним — включаем; если за секунду он так и не схватил,
+  -- просим игру «поймать» Alone так же, как она ловит Low.
+  if tgt == S.buddy and B("Chase") then
+    local el, bl = en:K2_GetActorLocation(), S.buddy:K2_GetActorLocation()
+    local dx, dy = bl.X - el.X, bl.Y - el.Y
+    local d = math.sqrt(dx * dx + dy * dy)
+    local front = false
+    pcall(function()
+      local fw = en:GetActorForwardVector()
+      local fl = math.max(math.sqrt(fw.X * fw.X + fw.Y * fw.Y), 0.001)
+      front = (fw.X * dx + fw.Y * dy) / (math.max(d, 1) * fl) > math.cos(math.rad(40))
+    end)
+    if d < (CFG.enemy_catch_dist or 180) and front then
+      if not B("CanAttack") then pcall(function() bb:SetValueAsBool(FName("CanAttack"), true) end) end
+      st.zoneSince = st.zoneSince or S.frames
+      if not st.attackLogged then st.attackLogged = true; trail(string.format("погоня: %s вплотную к Alone (%.0f см) — разрешил атаку", cn, d)) end
+      if S.frames - st.zoneSince > 60 and S.frames - (st.killAt or -9999) > 300 and not S.dyingNow then
+        st.killAt = S.frames
+        local ok, e = pcall(function() en:KillPlayer(S.buddy) end)
+        trail(string.format("погоня: %s за 1 с не схватил Alone — прошу игру поймать её (%s)", cn, ok and "ок" or tostring(e)))
+      end
+    else
+      st.zoneSince = nil; st.attackLogged = nil
+    end
+  end
+  local seeR = CFG.enemy_see_p2 or 350
+  local why = nil
+  if tgt ~= S.buddy and dA < seeR and dA < dL then why = "заметил Alone"
+  elseif tgt == S.p1 and dA < 1200 and dA + 150 < dL then why = "Alone ближе" end
+  if not why then return end
+  local los = true
+  pcall(function() local r = en.Controller:LineOfSightTo(S.buddy, { X = 0, Y = 0, Z = 0 }, false); if r == false then los = false end end)
+  if not los then return end
+  local ok = pcall(function()
+    bb:SetValueAsObject(FName("CharacterPercieved"), S.buddy)
+    bb:SetValueAsBool(FName("IsCharacterPercieved"), true)
+    bb:SetValueAsBool(FName("IsAlerted"), true)
+  end)
+  local now = nil; pcall(function() now = bb:GetValueAsObject(FName("CharacterPercieved")) end)
+  if not st.rtAt or S.frames - st.rtAt > 300 then
+    trail(string.format("погоня: %s — %s (до Alone %.0f, до Low %.0f, цель была %s) — гонится за Alone (%s)", cn, why, dA, dL, who(tgt), (ok and now == S.buddy) and "ок" or "не вышло"))
+  end
+  st.rtAt = S.frames
+end
 S.enemyTick = function()
   if CFG.enemies_catch_p2 == false then return end
   local E = S.enemy
@@ -3658,6 +3927,12 @@ S.enemyTick = function()
         if S.tl and #S.tl.lines > 0 then trail("лента кадров врага:\n    " .. table.concat(S.tl.lines, "\n    ")) end
         S.tl = { f0 = S.frames, untilF = S.frames + 3, lines = {}, sensor = en.BPC_PlayerProximitySensor }
       end
+      -- v9.15.2: ПОГОНЯ ЗА ВТОРЫМ ИГРОКОМ. Враг выбирает, за кем бежать, по
+      -- своей «памяти» (CharacterPercieved). В одиночной игре видит он только
+      -- игрока 1 — и бежит к Low, даже если Alone у него под носом (жалоба на
+      -- мини-кинов в вентиляции). Если враг гонится за Low, а Alone заметно
+      -- ближе и не прячется — пусть гонится за Alone.
+      if (dA < 2500 and zA < 500) or (dL < 2500 and zL < 500) then pcall(S.chaseTick, en, key, cn, dA, zA, dL, zL) end
       if dA > 600 or zA > 200 then return end
       local bb = en.Controller.Blackboard
       if not valid(bb) then return end
@@ -3734,6 +4009,14 @@ local function applyInputReal()
     trail(string.format("враги: поимка игрока 2 после подсадки — %s%s", ok and "отправлена" or "ошибка", ok and "" or (" " .. tostring(e))))
   end
   if not S.boost and S.frames % 600 == 0 then pcall(function() trail("камера 1 обычно: " .. S.cam1Info()) end) end
+  if S.animCheckAt and S.frames >= S.animCheckAt then
+    S.animCheckAt = nil
+    pcall(function() S.animDiff(S.p1, S.animPre and S.animPre[1], "после подсадки") end)
+    pcall(function() S.animDiff(S.buddy, S.animPre and S.animPre[2], "после подсадки") end)
+  end
+  -- «нормальный» снимок анимации для сравнения по F8: через 5 с после того,
+  -- как второй игрок получил героя (и обновляем раз в минуту, если без подсадок)
+  if not S.boost and not S.hadBoost and S.frames % 3600 == 300 then pcall(function() S.animBase = { [1] = S.animSnapOf(S.p1), [2] = S.animSnapOf(S.buddy) } end) end
   if S.respawnAt then local okR, eR = pcall(S.afterRespawnCam); if not okR then S.respawnAt = nil; trail("камера 1 после возрождения: ошибка " .. tostring(eR)) end end
   if not S.boost and S.frames % 600 == 300 then pcall(function() trail("герои обычно: " .. S.killDiag()); trail("роли обычно: " .. S.roleDiag()); pcall(function() local gm = UEHelpers.GetGameModeBase(); trail(string.format("режим игры: одиночная=%s, игроков=%s", tostring(gm:IsSinglePlayerGame()), tostring(gm.NumPlayers))) end) end) end
   if S.markReq then
@@ -3742,6 +4025,8 @@ local function applyInputReal()
       trail("===== МЕТКА (F8) =====")
       trail("подсадка: " .. (S.boost and string.format("идёт, подсаживает %s, %.1f с", heroName(S.boost.hero), (S.frames - S.boost.startFrame) / 60) or "нет"))
       trail("камера 1: " .. S.cam1Info())
+      pcall(function() S.animDiff(S.p1, S.animBase and S.animBase[1] or {}, "(F8)") end)
+      pcall(function() S.animDiff(S.buddy, S.animBase and S.animBase[2] or {}, "(F8)") end)
       trail("враги: " .. S.enemyInfo())
       trail("герои: " .. S.killDiag()); trail("роли: " .. S.roleDiag())
     end)
@@ -4668,7 +4953,7 @@ local function Tick()
   if S.frames % 120 == 60 then pcall(S.ambienceTick) end
   if S.audioProbe and S.coop then pcall(S.audioProbeTick) end
   if S.coop and not S.boost and S.frames % 30 == 20 then pcall(S.fixItemOwners, "проверка"); if S.frames % 600 == 20 then pcall(S.snapshotItemOwners, "обновление") end end
-  if S.frames % 120 == 30 then pcall(S.keepAnimating) end
+  if S.frames % 60 == 30 then pcall(S.keepAnimating) end
 
   if S.frames % 120 == 0 then pcall(dedupeRegistry, "проверка") end
   if S.boost and S.boost.hero == S.buddy then
@@ -4753,4 +5038,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.15.1 загружен. F9 — меню кооператива")
+log("v9.15.2 загружен. F9 — меню кооператива")
