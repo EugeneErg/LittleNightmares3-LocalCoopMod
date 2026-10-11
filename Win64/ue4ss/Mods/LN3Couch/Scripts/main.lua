@@ -1,4 +1,4 @@
--- LN3Couch v9.15 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.15.1 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -464,6 +464,20 @@ local function ensurePC2()
 end
 
 local function removePC2()
+  -- v9.15.1 (#15): если экран был разделён, вернуть игроку 1 его обычный обзор.
+  -- Раньше при выходе в меню/смене уровня с разделённым экраном у игрока 1
+  -- оставалась «половинная» настройка обзора, и вся игра казалась ближе
+  if S.aspectSaved then
+    local A = S.aspectSaved
+    pcall(function()
+      local lp = S.pc1.Player
+      local key = lp:GetFullName()
+      if A.lp[key] ~= nil then lp.AspectRatioAxisConstraint = A.lp[key]; A.lp[key] = nil; trail("экран: обзор игрока 1 возвращён (" .. tostring(lp.AspectRatioAxisConstraint) .. ")") end
+    end)
+    A.lp = {}
+    -- камеры старого уровня могли быть уже удалены — их не трогаем
+    A.cams = {}
+  end
   if valid(S.lp2) and valid(S.pc2) then try("reattach", function() S.lp2.PlayerController = S.pc2 end) end
   if S.playersSwapped then pcall(S.setPlayerOrder, false) end
   try("split off", function() gms().bUseSplitscreen = false end)
@@ -912,6 +926,31 @@ local function setFastExposure(fast)
   end)
 end
 
+-- v9.15.1 (#15): РАЗМЫТИЕ У ВТОРОГО ИГРОКА. У своей камеры игры глубина
+-- резкости наводится на героя, а у нашей второй камеры — нет: резкость
+-- оставалась на расстоянии из настроек уровня, и всё у игрока 2 было мыльным.
+-- Наводим резкость второй камеры на героя игрока 2 (p2_depth_of_field = false
+-- в settings.lua — выключить глубину резкости у второй камеры совсем).
+S.cam2Focus = function()
+  if not valid(S.cam2) or not valid(S.buddy) then return end
+  local cc = S.cam2.CameraComponent
+  if not valid(cc) then return end
+  local d = dist(S.cam2:K2_GetActorLocation(), S.buddy:K2_GetActorLocation())
+  local pp = cc.PostProcessSettings
+  if not S.dofLogged then
+    S.dofLogged = true
+    pcall(function() trail(string.format("вторая камера: резкость была %s/%.0f см, диафрагма %s/%.1f; до героя %.0f см",
+      tostring(pp.bOverride_DepthOfFieldFocalDistance), pp.DepthOfFieldFocalDistance or -1, tostring(pp.bOverride_DepthOfFieldFstop), pp.DepthOfFieldFstop or -1, d)) end)
+  end
+  local want = (CFG.p2_depth_of_field == false) and 0 or math.max(50, d)
+  -- без лишних записей: только если расстояние заметно изменилось
+  if pp.bOverride_DepthOfFieldFocalDistance and math.abs((pp.DepthOfFieldFocalDistance or 0) - want) < 5 then return end
+  pp.bOverride_DepthOfFieldFocalDistance = true
+  pp.DepthOfFieldFocalDistance = want
+  pcall(function() cc.PostProcessSettings = pp end)
+  cc.PostProcessBlendWeight = 1
+end
+
 -- Второй игрок создаётся ОДИН раз и дальше не удаляется (частое создание/удаление
 -- игроков роняло игру). Когда экран общий — у второго «экрана» просто отключаем
 -- контроллер, и движок его не рисует.
@@ -1042,6 +1081,10 @@ end
 local function updateSplit()
   if not usablePC2(S.pc2) then return end
   if S.exposureResetAt and S.frames >= S.exposureResetAt then S.exposureResetAt = nil; if not S.nativeCam then setFastExposure(false) end end
+  if S.split and not S.nativeCam and S.frames % 4 == 1 then
+    local okF, eF = pcall(S.cam2Focus)
+    if not okF and not S.dofErr then S.dofErr = true; trail("вторая камера: резкость — ошибка " .. tostring(eF)) end
+  end
   -- камеры новых комнат, подгрузившихся при разделённом экране, — тоже без полос
   if S.split and S.frames % 120 == 0 then pcall(S.applySplitAspect, true) end
   local want = wantSplit()
@@ -2821,6 +2864,51 @@ S.holdCam1 = function()
     if not S.cam1HoldLogged then S.cam1HoldLogged = true; trail(string.format("камера 1: уезжала на %.0f см — удерживаю", d)) end
   end
 end
+-- v9.15.1 (жалоба с Nexus): «после смерти камера приближается слишком сильно,
+-- помогает только загрузка контрольной точки». Если в момент смерти у
+-- камеры игрока 1 была включена «внешняя» камера (место подсадки, рычаг,
+-- крупный план), после возрождения она могла так и остаться. Через 2 с после
+-- возрождения проверяем и, если она ещё включена, возвращаем обычную камеру.
+-- Плюс пишем в trail.txt снимки камеры — чтобы по логу игрока понять причину.
+S.afterRespawnCam = function()
+  local age = S.frames - S.respawnAt
+  if age == 30 or age == 120 or age == 600 then
+    pcall(function() trail(string.format("камера 1 после возрождения (%.1f с): %s", age / 60, S.cam1Info())) end)
+  end
+  if age == 120 then
+    local cm = S.pc1.PlayerCameraManager
+    if not S.cmFuncsLogged then
+      S.cmFuncsLogged = true
+      pcall(function()
+        local names, c, depth = {}, cm:GetClass(), 0
+        while valid(c) and depth < 5 do
+          local cn = c:GetFName():ToString()
+          if cn == "Actor" or cn == "Object" then break end
+          pcall(function() c:ForEachFunction(function(f)
+            local n = f:GetFName():ToString()
+            if n:find("Zoom") or n:find("Reset") or n:find("External") or n:find("Override") or n:find("Stack") or n:find("Push") or n:find("Pop") or n:find("Clear") or n:find("Modifier") or n:find("Distance") then names[#names + 1] = cn .. "." .. n end
+          end) end)
+          local ok, sup = pcall(function() return c:GetSuperStruct() end); c = ok and sup or nil; depth = depth + 1
+        end
+        trail("камера 1: функции менеджера камеры: " .. table.concat(names, ", "))
+      end)
+    end
+    -- «приближение» камеры игры (AddCameraZoom): после возрождения его быть не должно
+    local z = 0; pcall(function() z = cm:GetGlobalCameraZoom() or 0 end)
+    if math.abs(z) > 0.01 and not S.boost and not S.cam1Frozen then
+      local okc, ec = pcall(function() cm:ClearCameraZoom() end)
+      local z2 = -1; pcall(function() z2 = cm:GetGlobalCameraZoom() or -1 end)
+      trail(string.format("камера 1: после возрождения осталось приближение %.2f — сбросил (%s, стало %.2f)", z, okc and "ок" or tostring(ec), z2))
+    end
+    local ext = false; pcall(function() ext = cm:GetOverrideExternalCamera() end)
+    if ext == true and not S.boost and not S.cam1Frozen then
+      pcall(function() cm:StopExternalOverTime(0.3, 0) end)
+      pcall(function() cm:SetOverrideExternalCamera(false) end)
+      trail("камера 1: после возрождения осталась внешняя камера — вернул обычную")
+    end
+  end
+  if age >= 600 then S.respawnAt = nil end
+end
 -- полный снимок камеры игрока 1: где стоит, куда смотрит, что показывает
 S.cam1Info = function()
   local cm = S.pc1.PlayerCameraManager
@@ -3094,6 +3182,7 @@ S.boostInput = function()
   -- иначе герой остаётся у ИИ, когда игра возрождает героев, и игра падает
   if S.frames % 6 == 0 then S.dyingNow = S.anyDying() end
   if S.dyingNow then
+    S.deathSeenAt = S.frames
     if S.boost then S.boostEnd("сцена смерти") end
     S.boostCooldown = S.frames + 60
     return
@@ -3645,6 +3734,7 @@ local function applyInputReal()
     trail(string.format("враги: поимка игрока 2 после подсадки — %s%s", ok and "отправлена" or "ошибка", ok and "" or (" " .. tostring(e))))
   end
   if not S.boost and S.frames % 600 == 0 then pcall(function() trail("камера 1 обычно: " .. S.cam1Info()) end) end
+  if S.respawnAt then local okR, eR = pcall(S.afterRespawnCam); if not okR then S.respawnAt = nil; trail("камера 1 после возрождения: ошибка " .. tostring(eR)) end end
   if not S.boost and S.frames % 600 == 300 then pcall(function() trail("герои обычно: " .. S.killDiag()); trail("роли обычно: " .. S.roleDiag()); pcall(function() local gm = UEHelpers.GetGameModeBase(); trail(string.format("режим игры: одиночная=%s, игроков=%s", tostring(gm:IsSinglePlayerGame()), tostring(gm.NumPlayers))) end) end) end
   if S.markReq then
     S.markReq = false
@@ -4549,6 +4639,9 @@ local function Tick()
       S.camSnap = true; S.roomSm = nil; S.lastBuddyLoc = nil; RC.cur = nil; RC.pickAt = 0; S.camFrozenAt = nil
       pcall(function() setFastExposure(true) end); S.exposureResetAt = S.frames + 90
       log("персонажи найдены заново (смена уровня/возрождение)"); S.lastDump = nil; dumpHeroes("после возрождения"); S.lostFrames = 0
+      -- v9.15.1: после смерти следим за камерой игрока 1 (жалоба: «после смерти камера слишком близко»)
+      if S.deathSeenAt and S.frames - S.deathSeenAt < 1200 then S.respawnAt = S.frames end
+      S.deathSeenAt = nil
       local okc, c = pcall(function() return S.buddy.Controller end)
       if okc and c == S.pc2 then S.real = true
       else
@@ -4660,4 +4753,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.15 загружен. F9 — меню кооператива")
+log("v9.15.1 загружен. F9 — меню кооператива")
