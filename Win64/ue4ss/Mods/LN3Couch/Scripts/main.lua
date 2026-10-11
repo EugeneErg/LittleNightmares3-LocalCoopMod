@@ -1,4 +1,4 @@
--- LN3Couch v9.15.2 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.15.3 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -574,12 +574,16 @@ local function roomCamPose(a, p)
     local cvc, cvyaw, cve = boxInfo(cv)
     local rx, ry, rz = 1, 1, 1
     pcall(function() if cc.mUseRatio then local r = cc.mCameraVolumeRatio; rx, ry, rz = r.X, r.Y, r.Z end end)
-    -- в какую сторону от камеры смещается зона героя — в ту же едет камера
-    local wx, wy = tx * pe.X, ty * pe.Y
-    local gx = wx * math.cos(pyaw) - wy * math.sin(pyaw)
-    local gy = wx * math.sin(pyaw) + wy * math.cos(pyaw)
-    local clx, cly = gx * math.cos(cvyaw) + gy * math.sin(cvyaw), -gx * math.sin(cvyaw) + gy * math.cos(cvyaw)
-    local nx, ny = clamp(clx / math.max(pe.X, pe.Y, 1), -1, 1), clamp(cly / math.max(pe.X, pe.Y, 1), -1, 1)
+    -- v9.15.3: где герой в своей коробке (доли по КАЖДОЙ оси отдельно), там
+    -- и камера в своей. Замеры на камере игрока 1 (зона ArrivalsBridgeEntry,
+    -- 7 точек): доли камеры игры совпадают с долями героя по каждой оси с
+    -- точностью ~0,05. Раньше доли делились на ОДНУ общую длину (наибольшую
+    -- сторону) — в вытянутых зонах камера почти не ездила вдоль короткой
+    -- стороны. Коробки бывают повёрнуты по-разному — поворачиваем доли
+    -- из осей коробки героя в оси коробки камеры.
+    local d = pyaw - cvyaw
+    local nx = clamp(tx * math.cos(d) - ty * math.sin(d), -1, 1)
+    local ny = clamp(tx * math.sin(d) + ty * math.cos(d), -1, 1)
     loc = toWorld(cvc, cvyaw, nx * cve.X * rx, ny * cve.Y * ry, tz * cve.Z * rz)
   else
     loc = cc:K2_GetComponentLocation()
@@ -603,6 +607,40 @@ local function roomCamPose(a, p)
   return loc, { Pitch = pitch, Yaw = yaw, Roll = 0 }, fov
 end
 -- поза комнатной камеры для героя игрока 2 (или nil — тогда старая камера)
+-- v9.15.3: КАМЕРА ИГРОКА 1 УШЛА В КОМНАТУ ИГРОКА 2. Игра включает камеру
+-- комнаты, когда в её зону заходит любой из игроков (а для игры «главный»
+-- герой у нас — Alone), и показывает её на камере игрока 1. Когда Alone
+-- уходит в другую зону (например, наверх по сюжетному событию), камера
+-- игрока 1 переезжает к ней — и обе половины показывают одно и то же.
+-- Признак: камера игрока 1 стоит внутри объёма камеры комнаты Alone, а не
+-- комнаты Low. Тогда просим систему камер игры (SetViewOverTime) вернуть
+-- игроку 1 камеру его комнаты.
+S.inCamVol = function(a, p, pad)
+  local cv = a.mEditableCameraVolume
+  if not valid(cv) then return false end
+  local c, yaw, e = boxInfo(cv)
+  local lx, ly, lz = toLocal(c, yaw, p)
+  pad = pad or 100
+  return math.abs(lx) <= e.X + pad and math.abs(ly) <= e.Y + pad and math.abs(lz) <= e.Z + pad
+end
+S.keepP1Room = function()
+  if not S.split or S.frames % 15 ~= 11 or S.boost or S.cam1Frozen or S.dyingNow then return end
+  local cm = S.pc1.PlayerCameraManager
+  local ext = false; pcall(function() ext = cm:GetOverrideExternalCamera() end)
+  if ext == true then return end
+  local r1 = pickRoomCam(S.p1:K2_GetActorLocation())
+  local r2 = pickRoomCam(S.buddy:K2_GetActorLocation())
+  if not (valid(r1) and valid(r2)) or r1 == r2 then return end
+  local cl = cm:GetCameraLocation()
+  if S.inCamVol(r2, cl, 100) and not S.inCamVol(r1, cl, 100) then
+    local ok, e = pcall(function() cm:SetViewOverTime(r1, 0.4, 0) end)
+    if not S.p1RoomAt or S.frames - S.p1RoomAt > 300 then
+      trail(string.format("камера 1: ушла в комнату Alone (%s) — возвращаю камеру комнаты Low (%s): %s",
+        r2:GetFName():ToString(), r1:GetFName():ToString(), ok and "ок" or tostring(e)))
+    end
+    S.p1RoomAt = S.frames
+  end
+end
 local function roomCamTarget()
   if CFG.room_camera == false then return nil end
   local okp, p = pcall(function() return S.buddy:K2_GetActorLocation() end)
@@ -643,22 +681,15 @@ local function roomCamTarget()
     end
   end
   if not valid(RC.cur) then return nil end
-  -- v9.15.2: если для Alone выбрана та же камера комнаты, что сейчас у Low,
-  -- вторая половина показывала то же, что первая (на обеих — Low). Тогда
-  -- ведём вторую камеру за героем, как у игрока 1, а не комнатной камерой.
   if S.frames >= (RC.p1At or 0) then
     RC.p1At = S.frames + 10
     local okl, l1 = pcall(function() return S.p1:K2_GetActorLocation() end)
     RC.p1cur = nil
     if okl then pcall(function() RC.p1cur = pickRoomCam(l1) end) end
   end
-  if valid(RC.p1cur) and RC.p1cur == RC.cur then
-    if not RC.sameAt or S.frames - RC.sameAt > 600 then
-      RC.sameAt = S.frames
-      pcall(function() trail("вторая камера: у Alone та же камера комнаты, что у Low (" .. RC.cur:GetFName():ToString() .. ") — веду камеру за Alone") end)
-    end
-    return nil
-  end
+  -- v9.15.3: и в той же зоне, что Low, камеру для Alone считаем по данным
+  -- камеры комнаты (а не копируем камеру игрока 1): при разделении зона
+  -- выбирается заново по месту Alone, и поза считается от Alone
   local ok, loc, rot, fov = pcall(roomCamPose, RC.cur, p)
   if not ok then
     if not RC.errLogged then RC.errLogged = true; log("комнатная камера: ошибка %s", tostring(loc)) end
@@ -666,6 +697,33 @@ local function roomCamTarget()
   end
   if dist(loc, p) > 5000 then return nil end
   return loc, rot, fov
+end
+-- v9.15.3: ГЕРОЙ ВСЕГДА В КАДРЕ. Камера комнаты поворачивается за героем
+-- лишь в пределах, заданных художниками, а «камера за героем» повторяет
+-- наклон камеры игрока 1. Когда Alone забиралась высоко (на другой ярус),
+-- вторая камера смотрела мимо — её было не видно. Если герой дальше от
+-- центра кадра, чем на cam2_keep_yaw/cam2_keep_pitch градусов, доворачиваем.
+S.keepInView = function(loc, pitch, yaw)
+  local okb, bl = pcall(function() return S.buddy:K2_GetActorLocation() end)
+  if not okb then return pitch, yaw end
+  local dx, dy, dz = bl.X - loc.X, bl.Y - loc.Y, (bl.Z + 40) - loc.Z
+  local h = math.sqrt(dx * dx + dy * dy)
+  if h < 50 then return pitch, yaw end
+  local lookYaw = math.deg(math.atan(dy, dx))
+  local lookPitch = math.deg(math.atan(dz, h))
+  -- половина экрана сверху/снизу — по высоте кадр уже, держим героя ближе к центру
+  local limY = CFG.cam2_keep_yaw or 20
+  local limP = CFG.cam2_keep_pitch or ((S.split and not S.layoutLR()) and 8 or 13)
+  local dyaw = ((lookYaw - yaw + 180) % 360) - 180
+  local dp = lookPitch - pitch
+  local fixed = false
+  if dyaw > limY then yaw = yaw + dyaw - limY; fixed = true elseif dyaw < -limY then yaw = yaw + dyaw + limY; fixed = true end
+  if dp > limP then pitch = pitch + dp - limP; fixed = true elseif dp < -limP then pitch = pitch + dp + limP; fixed = true end
+  if fixed and (not S.keepLogAt or S.frames - S.keepLogAt > 600) then
+    S.keepLogAt = S.frames
+    trail(string.format("вторая камера: Alone была вне кадра (в сторону %.0f°, по высоте %.0f°) — доворачиваю", dyaw, dp))
+  end
+  return pitch, yaw
 end
 updateCam2Pose = function()
   if not (valid(S.cam2) and valid(S.pc1) and valid(S.p1) and valid(S.buddy)) then return end
@@ -721,7 +779,9 @@ updateCam2Pose = function()
     S.p2lx = (S.p2lx or 0) + (tx - (S.p2lx or 0)) * 0.12
     S.p2ly = (S.p2ly or 0) + (ty - (S.p2ly or 0)) * 0.12
     try("cam2 room", function()
-      S.cam2:K2_SetActorLocationAndRotation({ X = rs.x, Y = rs.y, Z = rs.z }, { Pitch = rs.pitch + S.p2ly * 10, Yaw = rs.yaw + S.p2lx * 15, Roll = 0 }, false, {}, false)
+      local kp, ky = rs.pitch, rs.yaw
+      pcall(function() kp, ky = S.keepInView({ X = rs.x, Y = rs.y, Z = rs.z }, rs.pitch, rs.yaw) end)
+      S.cam2:K2_SetActorLocationAndRotation({ X = rs.x, Y = rs.y, Z = rs.z }, { Pitch = kp + S.p2ly * 10, Yaw = ky + S.p2lx * 15, Roll = 0 }, false, {}, false)
       local cc = S.cam2.CameraComponent
       if valid(cc) then cc:SetFieldOfView(rs.fov) end
     end)
@@ -768,8 +828,14 @@ updateCam2Pose = function()
     local tx, ty = S.p2LookX or 0, S.p2LookY or 0
     S.p2lx = (S.p2lx or 0) + (tx - (S.p2lx or 0)) * 0.12
     S.p2ly = (S.p2ly or 0) + (ty - (S.p2ly or 0)) * 0.12
-    local loc = { X = sm.bx + sm.dx, Y = sm.by + sm.dy, Z = sm.bz + sm.dz }
-    S.cam2:K2_SetActorLocationAndRotation(loc, { Pitch = sm.pitch + S.p2ly * 12, Yaw = sm.yaw + S.p2lx * 22, Roll = b.roll }, false, {}, false)
+    -- v9.15.3: высоту берём не больше 2,5 м над героем: камера игрока 1
+    -- бывает высоко над Low (он внизу, камера смотрит на ярус выше), и вторая
+    -- камера, повторяя это, висела над Alone и смотрела ей в макушку
+    local dzc = math.max(-50, math.min(CFG.cam2_max_height or 250, sm.dz))
+    local loc = { X = sm.bx + sm.dx, Y = sm.by + sm.dy, Z = sm.bz + dzc }
+    local kp, ky = sm.pitch, sm.yaw
+    pcall(function() kp, ky = S.keepInView(loc, sm.pitch, sm.yaw) end)
+    S.cam2:K2_SetActorLocationAndRotation(loc, { Pitch = kp + S.p2ly * 12, Yaw = ky + S.p2lx * 22, Roll = b.roll }, false, {}, false)
     local cc = S.cam2.CameraComponent
     if valid(cc) then cc:SetFieldOfView(cm1:GetFOVAngle()) end
   end)
@@ -811,6 +877,63 @@ end
 -- Виден ли напарник в кадре игрока 1 (доли экрана 0..1), nil — если не удалось посчитать
 local projLogged = false
 local VIS_LIB = nil
+-- v9.15.3: ВИДИМАЯ ЧАСТЬ ЭКРАНА. Камеры игры держат пропорции кадра (16:9):
+-- на мониторе с другими пропорциями (например, 4:3 — 2048x1536) сверху и
+-- снизу чёрные полосы. Положение героя на экране считается по всему окну,
+-- вместе с полосами, — герой в полосе «в кадре», хотя его не видно (Low был
+-- на 0.89 высоты окна, а картинка кончается на 0.875). Берём пропорции
+-- текущего вида камеры игрока 1 и считаем долю уже от видимой картинки.
+VIS_RECT = { at = -999, x0 = 0, y0 = 0, w = 1, h = 1 }
+S.visibleRect = function(W, H)
+  if S.frames - VIS_RECT.at < 30 then return VIS_RECT end
+  VIS_RECT.at = S.frames
+  VIS_RECT.x0, VIS_RECT.y0, VIS_RECT.w, VIS_RECT.h = 0, 0, 1, 1
+  if S.split then return VIS_RECT end   -- при разделении мод сам снимает «держать пропорции»
+  local constrain, ar = nil, nil
+  pcall(function()
+    local pov = S.pc1.PlayerCameraManager.CameraCachePrivate.POV
+    constrain, ar = pov.bConstrainAspectRatio, pov.AspectRatio
+  end)
+  if constrain == true and ar and ar > 0 then S.sharedAspect = ar elseif W and H and H > 0 then S.sharedAspect = W / H end
+  if constrain == nil and not VIS_RECT.errLogged then VIS_RECT.errLogged = true; trail("экран: пропорции кадра камеры игрока 1 не прочитать — считаю по всему окну") end
+  if constrain ~= true or not ar or ar <= 0 or not (W and H and W > 0 and H > 0) then return VIS_RECT end
+  local va = W / H
+  if va < ar - 0.01 then
+    local vh = (W / ar) / H; VIS_RECT.y0, VIS_RECT.h = (1 - vh) / 2, vh       -- полосы сверху и снизу
+  elseif va > ar + 0.01 then
+    local vw = (H * ar) / W; VIS_RECT.x0, VIS_RECT.w = (1 - vw) / 2, vw       -- полосы по бокам
+  end
+  if not VIS_RECT.logged then
+    VIS_RECT.logged = true
+    trail(string.format("экран: окно %dx%d, кадр игры %.2f — видимая часть: по ширине %.0f%%, по высоте %.0f%%", W, H, ar, VIS_RECT.w * 100, VIS_RECT.h * 100))
+  end
+  return VIS_RECT
+end
+-- v9.15.3: БУДЕТ ЛИ ГЕРОЙ ВИДЕН НА ОБЩЕМ ЭКРАНЕ. Пока экран разделён, кадр
+-- игрока 1 — половина окна с другими пропорциями, и пересчёт «с половины на
+-- целый экран» ошибался (тем более с чёрными полосами 16:9 на мониторе 4:3):
+-- мод объединял, на общем экране герой оказывался за краем — и снова делил,
+-- по кругу. Считаем по углам от камеры игрока 1: общий кадр — это её угол
+-- обзора по ширине и пропорции кадра игры (16:9) по высоте. Возвращает доли
+-- от половины угла: 0 — центр, 1 — край кадра.
+S.sharedAspect = 16 / 9
+S.viewFrac = function(hero)
+  local cm = S.pc1.PlayerCameraManager
+  local cl, cr, fov = cm:GetCameraLocation(), cm:GetCameraRotation(), cm:GetFOVAngle()
+  local t = hero:K2_GetActorLocation()
+  local yaw, pitch = math.rad(cr.Yaw), math.rad(cr.Pitch)
+  local fx, fy, fz = math.cos(pitch) * math.cos(yaw), math.cos(pitch) * math.sin(yaw), math.sin(pitch)
+  local rx, ry = -math.sin(yaw), math.cos(yaw)                                  -- вправо
+  local ux, uy, uz = -math.sin(pitch) * math.cos(yaw), -math.sin(pitch) * math.sin(yaw), math.cos(pitch)  -- вверх
+  local dx, dy, dz = t.X - cl.X, t.Y - cl.Y, t.Z - cl.Z
+  local f = dx * fx + dy * fy + dz * fz
+  if f <= 1 then return nil end
+  local r = dx * rx + dy * ry
+  local u = dx * ux + dy * uy + dz * uz
+  local th = math.tan(math.rad((fov or 60) / 2))
+  local tv = th / S.sharedAspect
+  return (r / f) / th, (u / f) / tv
+end
 local function buddyScreenPos(hero)
   hero = hero or S.buddy
   local ok, res = pcall(function()
@@ -829,7 +952,8 @@ local function buddyScreenPos(hero)
     local y = out.Y or (out[1] and out[1].Y)
     if not projLogged and hero == S.buddy then projLogged = true; log("проверка видимости: экран %dx%d, напарник %s (%s, %s)", W, H, tostring(onScr), tostring(x), tostring(y)) end
     if not onScr or not x or not y then return { inFront = false } end
-    return { inFront = true, x = x / W, y = y / H }
+    local r = S.visibleRect(W, H)
+    return { inFront = true, x = (x / W - r.x0) / r.w, y = (y / H - r.y0) / r.h }
   end)
   if ok then return res end
   if not projLogged then projLogged = true; log("проверка видимости не удалась: %s", tostring(res)) end
@@ -889,11 +1013,16 @@ local function wantSplit()
         else return { inFront = true, x = 0.5 + (pp.x - 0.5) * 2, y = pp.y } end
       end
       local q = full(p)
-      -- игра может развернуть камеру игрока 1 к напарнику (колесо, рычаг): тогда
-      -- напарник в кадре, а сам игрок 1 — нет. Объединяем, только если в кадре оба.
+      -- v9.15.3: где герои окажутся на общем экране — по углам камеры игрока 1
+      -- (объединяем только с запасом: до 75% от края по ширине и высоте,
+      -- а делим у самого края — иначе на границе «делится-объединяется»)
+      local okA, ax, ay = pcall(S.viewFrac, S.buddy)
+      if okA and ax then q = { inFront = true, x = 0.5 + ax * 0.5, y = 0.5 - ay * 0.5 } elseif okA then q = { inFront = false } end
       local raw1 = buddyScreenPos(S.p1)
       local q1 = full(raw1)
-      local p1In = q1 == nil or insideBox(q1, 0.05)
+      local okB, bx, by = pcall(S.viewFrac, S.p1)
+      if okB and bx then q1 = { inFront = true, x = 0.5 + bx * 0.5, y = 0.5 - by * 0.5 } elseif okB then q1 = { inFront = false } end
+      local p1In = q1 == nil or insideBox(q1, 0.125)
       -- объединяем, когда герои в одной комнате и напарник уверенно в кадре,
       -- или когда они просто стоят рядом (тогда комнаты не важны)
       local close, dh, dz = false, 99999, 0
@@ -905,7 +1034,10 @@ local function wantSplit()
       -- ролик: камера игры смотрит в сторону (зеркало, катсцена) — в её кадре нет
       -- НИ ОДНОГО героя, а сами герои рядом. Делить тут нечего, а два вида во
       -- время ролика роняли игру (issue #10, сцена с зеркалом) — объединяем.
-      local cutscene = close and not (p and p.inFront) and not (raw1 and raw1.inFront)
+      -- v9.15.3: только если герои стоят совсем рядом на одной высоте (ролики
+      -- с движком и так ловит S.inCutscene); иначе «не видно обоих» бывает,
+      -- когда второй лезет наверх, а камера игры тянется к нему
+      local cutscene = dh < 250 and dz < 60 and not (p and p.inFront) and not (raw1 and raw1.inFront)
       if cutscene then
         if not VIS.cutLogged then VIS.cutLogged = true; trail("экран: в кадре нет ни одного героя, а они рядом (ролик) — объединяю") end
         VIS.shownFor = math.max(VIS.shownFor, 15)
@@ -916,7 +1048,7 @@ local function wantSplit()
       if diffRooms or (VIS.sameFor or 0) < 20 then VIS.shownFor = 0
       elseif not p1In then VIS.shownFor = 0
       elseif close then VIS.shownFor = VIS.shownFor + 2
-      elseif insideBox(q, 0.05) then VIS.shownFor = VIS.shownFor + 1
+      elseif insideBox(q, 0.125) then VIS.shownFor = VIS.shownFor + 1
       else VIS.shownFor = math.max(0, VIS.shownFor - 2) end     -- короткие «выпадения» не сбрасывают счёт
       if dh < 900 and (not VIS.mlogAt or S.frames - VIS.mlogAt > 120) then
         VIS.mlogAt = S.frames
@@ -930,10 +1062,13 @@ local function wantSplit()
       local p1Out = p1 ~= nil and not insideBox(p1, 0.0)
       -- ролик: в кадре камеры игры нет ни одного героя, а они рядом — не делим
       -- (камера смотрит в сторону, например в зеркало; issue #10)
+      -- v9.15.3: «ролик» — только когда герои вплотную на одной высоте. Раньше
+      -- (до 4,5 м и 2 м по высоте) это срабатывало, когда второй лез наверх:
+      -- обоих уже не видно, а экран не делился
       local close = false
       pcall(function()
         local a, b = S.p1:K2_GetActorLocation(), S.buddy:K2_GetActorLocation()
-        close = math.sqrt((a.X - b.X) ^ 2 + (a.Y - b.Y) ^ 2) < (CFG.merge_distance or 450) and math.abs(a.Z - b.Z) < 200
+        close = math.sqrt((a.X - b.X) ^ 2 + (a.Y - b.Y) ^ 2) < 250 and math.abs(a.Z - b.Z) < 60
       end)
       if close and not (p and p.inFront) and not (p1 and p1.inFront) then
         if not VIS.cutLogged then VIS.cutLogged = true; trail("экран: в кадре нет ни одного героя, а они рядом (ролик) — не делю") end
@@ -941,9 +1076,16 @@ local function wantSplit()
         return false
       end
       VIS.cutLogged = false
-      if insideBox(p, 0.04) and not p1Out then VIS.hiddenFor = 0 else VIS.hiddenFor = VIS.hiddenFor + 1 end
+      -- v9.15.3: «виден» — с запасом от края (герой — точка у пояса, у самой
+      -- рамки он уже наполовину за кадром, а сверху за кадром голова), и
+      -- счёт не обнуляется, когда герой на миг заходит обратно в рамку:
+      -- у края он то входит, то выходит, и раньше счёт так и не набирался
+      local seen = p and p.inFront and p.x > 0.06 and p.x < 0.94 and p.y > 0.12 and p.y < 0.96
+      if seen and not p1Out then VIS.hiddenFor = math.max(0, VIS.hiddenFor - 3) else VIS.hiddenFor = VIS.hiddenFor + 1 end
       -- делим, если напарник ушёл из кадра или в другую комнату
-      return VIS.hiddenFor >= 20 or VIS.diffFor >= 20
+      -- если и сам игрок 1 выпал из кадра — делим быстрее
+      if p1Out and VIS.hiddenFor >= 8 then return true end
+      return VIS.hiddenFor >= 12 or VIS.diffFor >= 20
     end
   end
   local ok, d = pcall(function() return S.p1:GetDistanceTo(S.buddy) end)
@@ -1159,22 +1301,6 @@ local function updateSplit()
       end
     end)
     pcall(S.decideSplitSides); if CFG.split_swap_sides ~= false then pcall(S.setPlayerOrder, S.p2First) end
-    -- разбор: куда смотрит вторая камера в момент разделения
-    pcall(function()
-      local function nm(a) return valid(a) and a:GetFName():ToString() or "нет" end
-      local cl, cr = S.cam2:K2_GetActorLocation(), S.cam2:K2_GetActorRotation()
-      local function off(t)
-        local yaw, pitch = math.rad(cr.Yaw), math.rad(cr.Pitch)
-        local fx, fy, fz = math.cos(pitch) * math.cos(yaw), math.cos(pitch) * math.sin(yaw), math.sin(pitch)
-        local dx, dy, dz = t.X - cl.X, t.Y - cl.Y, t.Z - cl.Z
-        local len = math.max(math.sqrt(dx * dx + dy * dy + dz * dz), 1)
-        return math.deg(math.acos(math.max(-1, math.min(1, (fx * dx + fy * dy + fz * dz) / len))))
-      end
-      local bl, pl = S.buddy:K2_GetActorLocation(), S.p1:K2_GetActorLocation()
-      local vt = nil; pcall(function() vt = S.pc2:GetViewTarget() end)
-      trail(string.format("вторая камера при разделении: комната %s (у Low %s), до Alone %.0f см, Alone от центра %.0f°, Low от центра %.0f°, вид игрока 2 = %s",
-        nm(RC.cur), nm(RC.p1cur), dist(cl, bl), off(bl), off(pl), vt == S.cam2 and "наша камера" or clsName(vt)))
-    end)
   end
   setSplitVisible(want)
   pcall(S.applySplitAspect, want)
@@ -3019,29 +3145,58 @@ end
 -- крупный план), после возрождения она могла так и остаться. Через 2 с после
 -- возрождения проверяем и, если она ещё включена, возвращаем обычную камеру.
 -- Плюс пишем в trail.txt снимки камеры — чтобы по логу игрока понять причину.
+S.cam1Dist = function()
+  local d = -1
+  pcall(function() d = dist(S.pc1.PlayerCameraManager:GetCameraLocation(), S.p1:K2_GetActorLocation()) end)
+  return d
+end
 S.afterRespawnCam = function()
   local age = S.frames - S.respawnAt
-  if age == 30 or age == 120 or age == 600 then
-    pcall(function() trail(string.format("камера 1 после возрождения (%.1f с): %s", age / 60, S.cam1Info())) end)
+  -- v9.15.3: «после каждой смерти камера всё ближе». В логе видно: во время
+  -- смерти игра вызывает AddCameraZoom (0,2 на канале 1), а снятия
+  -- (ClearCameraZoom) после возрождения нет — приближения копятся.
+  -- Через 0,5 с после возрождения снимаем их (ClearCameraZoom по номерам) и
+  -- пишем в лог расстояние камеры до Low до и через 2 с после.
+  local open = S.zoomOpen or {}
+  if (#open > 0 or S.zoomFixing) and CFG.reset_death_zoom ~= false then
+    local cm = S.pc1.PlayerCameraManager
+    if age == 30 then
+      S.zoomD0 = S.cam1Dist()
+      -- v9.15.3: копия списка и флаг «это мы» — наш же вызов AddCameraZoom
+      -- попадал в перехват и дописывался в перебираемый список (бесконечный
+      -- цикл, игра зависала после смерти)
+      local list, seen = {}, {}
+      for _, z in ipairs(open) do
+        local key = tostring(z.ch or 1)
+        if not seen[key] and #list < 4 then seen[key] = true; list[#list + 1] = z end
+      end
+      S.zoomOpen = {}
+      S.zoomSelf = true
+      -- AddCameraZoom возвращает номер приближения; снимают его ClearCameraZoom
+      -- по номеру. Номер «смертельного» приближения нам не виден, поэтому
+      -- узнаём текущий номер своим пустым приближением и снимаем несколько
+      -- последних номеров (своё пустое — тоже)
+      local ids = {}
+      for _, z in ipairs(list) do
+        local okA, id = pcall(function() return cm:AddCameraZoom(cm, 0.0, 0.0, z.ch or 1, 6) end)
+        if okA and type(id) == "number" then
+          for i = math.max(0, id - 6), id do ids[#ids + 1] = i end
+        end
+      end
+      local cleared = 0
+      for _, i in ipairs(ids) do
+        if pcall(function() cm:ClearCameraZoom(i, 0.5, 6) end) then cleared = cleared + 1 end
+      end
+      S.zoomSelf = false
+      S.zoomFixing = true
+      trail(string.format("камера 1: после смерти остались приближения (%d) — обнуляю (до Low %.0f см)", #list, S.zoomD0))
+    elseif age == 120 then
+      trail(string.format("камера 1: через 2 с до Low %.0f см (было %.0f)", S.cam1Dist(), S.zoomD0 or -1))
+      S.zoomOpen = {}; S.zoomFixing = nil
+    end
   end
   if age == 120 then
     local cm = S.pc1.PlayerCameraManager
-    if not S.cmFuncsLogged then
-      S.cmFuncsLogged = true
-      pcall(function()
-        local names, c, depth = {}, cm:GetClass(), 0
-        while valid(c) and depth < 5 do
-          local cn = c:GetFName():ToString()
-          if cn == "Actor" or cn == "Object" then break end
-          pcall(function() c:ForEachFunction(function(f)
-            local n = f:GetFName():ToString()
-            if n:find("Zoom") or n:find("Reset") or n:find("External") or n:find("Override") or n:find("Stack") or n:find("Push") or n:find("Pop") or n:find("Clear") or n:find("Modifier") or n:find("Distance") then names[#names + 1] = cn .. "." .. n end
-          end) end)
-          local ok, sup = pcall(function() return c:GetSuperStruct() end); c = ok and sup or nil; depth = depth + 1
-        end
-        trail("камера 1: функции менеджера камеры: " .. table.concat(names, ", "))
-      end)
-    end
     -- «приближение» камеры игры (AddCameraZoom): после возрождения его быть не должно
     local z = 0; pcall(function() z = cm:GetGlobalCameraZoom() or 0 end)
     if math.abs(z) > 0.01 and not S.boost and not S.cam1Frozen then
@@ -3426,6 +3581,7 @@ S.ensurePOI = function()
   return c
 end
 S.midCamTick = function()
+  pcall(S.keepP1Room)
   if S.frames % 6 == 3 then S.dyingNow = S.anyDying() end
   if CFG.shared_center == false then return end
   local c = S.ensurePOI()
@@ -3446,6 +3602,31 @@ S.midCamTick = function()
   end
 end
 
+-- v9.15.3: «ПОСЛЕ КАЖДОЙ СМЕРТИ КАМЕРА ВСЁ БЛИЖЕ». При смерти игра приближает
+-- камеру игрока 1 (AddCameraZoom: +0,2 на канале 1), а после возрождения в
+-- кооперативе это приближение не снимает — с каждой смертью камера ближе.
+-- Отмечаем приближения камеры игрока 1, которые никто не снял; после
+-- возрождения мод снимает их сам (S.afterRespawnCam).
+S.zoomTrack = function(name, ctx, args)
+  if S.zoomSelf then return end
+  local cm = nil; pcall(function() cm = ctx:get() end)
+  if cm ~= S.pc1.PlayerCameraManager then return end
+  S.zoomOpen = S.zoomOpen or {}
+  if name == "AddCameraZoom" or name == "AddCameraZoomAfterDelay" then
+    local ch = 1; pcall(function() ch = args[4]:get() end)
+    S.zoomOpen[#S.zoomOpen + 1] = { ch = ch, at = S.frames }
+  elseif name == "ClearCameraZoom" then
+    S.zoomOpen = {}
+  end
+end
+for _, fnName in ipairs({ "AddCameraZoom", "AddCameraZoomAfterDelay", "ClearCameraZoom" }) do
+  pcall(function()
+    RegisterHook("/Script/CameraSystemRuntime.CameraManager:" .. fnName, function(ctx, ...)
+      local args = { ... }
+      pcall(S.zoomTrack, fnName, ctx, args)
+    end)
+  end)
+end
 -- ВРАГИ И ИГРОК 2. Игра даёт врагам ловить только героя игрока 1: напарника
 -- (в одиночной игре это ИИ) они лишь преследуют. Поэтому, если враг вплотную
 -- подбежал к герою игрока 2, мод сам говорит врагу «поймал» — дальше игра
@@ -4025,6 +4206,14 @@ local function applyInputReal()
       trail("===== МЕТКА (F8) =====")
       trail("подсадка: " .. (S.boost and string.format("идёт, подсаживает %s, %.1f с", heroName(S.boost.hero), (S.frames - S.boost.startFrame) / 60) or "нет"))
       trail("камера 1: " .. S.cam1Info())
+      pcall(function()
+        local cl = S.cam2:K2_GetActorLocation()
+        local fov = -1; pcall(function() fov = S.cam2.CameraComponent.FieldOfView end)
+        local vt = nil; pcall(function() vt = S.pc2:GetViewTarget() end)
+        trail(string.format("камера 2: до Alone %.0f см, обзор %.0f, режим %s, комната %s, экран %s, вид игрока 2 = %s",
+          dist(cl, S.buddy:K2_GetActorLocation()), fov, S.roomSm and "комнатная" or "за героем", valid(RC.cur) and RC.cur:GetFName():ToString() or "нет",
+          S.split and "разделён" or "общий", vt == S.cam2 and "наша камера" or clsName(vt)))
+      end)
       pcall(function() S.animDiff(S.p1, S.animBase and S.animBase[1] or {}, "(F8)") end)
       pcall(function() S.animDiff(S.buddy, S.animBase and S.animBase[2] or {}, "(F8)") end)
       trail("враги: " .. S.enemyInfo())
@@ -5038,4 +5227,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.15.2 загружен. F9 — меню кооператива")
+log("v9.15.3 загружен. F9 — меню кооператива")
