@@ -1,4 +1,4 @@
--- LN3Couch v9.15.3 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.15.4 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -81,8 +81,8 @@ local function saveSettings()
   f:write("-- настройки LN3Couch, сохранены из меню игры\nreturn " .. serialize(CFG) .. "\n"); f:close()
 end
 loadSettings()
--- экран всегда делится автоматически (по комнатам и видимости); в меню
--- выбирается только вид разделения: авто или всегда сверху/снизу
+-- экран делится автоматически (по комнатам и видимости); в меню выбирается
+-- вид разделения: авто, горизонтально, вертикально или «всегда» (split_sides)
 CFG.split = "auto"
 if CFG.keyboard and not CFG.keyboard.throw then CFG.keyboard.throw = "Period" end
 if CFG.gamepad and not CFG.gamepad.throw then CFG.gamepad.throw = "Gamepad_RightShoulder" end
@@ -340,9 +340,22 @@ local function gms() return UEHelpers.GetGameMapsSettings() end
 -- (каждой половине остаётся широкий кадр, как в игре), на сверхшироком
 -- (21:9 и шире) — слева и справа. В settings.lua можно задать
 -- split_layout = "top_bottom" или "left_right".
+-- v9.15.4: вид разделения из меню. nil — сам (как стоят герои);
+-- true — слева/справа (вертикальная черта), false — сверху/снизу.
+S.sidesForced = function()
+  local s = CFG.split_sides or "auto"
+  if s == "left_right" or s == "always_left_right" then return true end
+  if s == "top_bottom" or s == "always_top_bottom" then return false end
+  return nil
+end
+S.splitAlways = function()
+  local s = CFG.split_sides or "auto"
+  return s == "always_left_right" or s == "always_top_bottom"
+end
 S.layoutLR = function()
   if CFG.split_layout_force == "left_right" then return true end
-  if CFG.split_layout_force == "top_bottom" or CFG.split_sides == "top_bottom" then return false end
+  if CFG.split_layout_force == "top_bottom" then return false end
+  local f = S.sidesForced(); if f ~= nil then return f end
   if S.splitLR ~= nil then return S.splitLR end
   if not S.aspect then
     pcall(function()
@@ -607,40 +620,6 @@ local function roomCamPose(a, p)
   return loc, { Pitch = pitch, Yaw = yaw, Roll = 0 }, fov
 end
 -- поза комнатной камеры для героя игрока 2 (или nil — тогда старая камера)
--- v9.15.3: КАМЕРА ИГРОКА 1 УШЛА В КОМНАТУ ИГРОКА 2. Игра включает камеру
--- комнаты, когда в её зону заходит любой из игроков (а для игры «главный»
--- герой у нас — Alone), и показывает её на камере игрока 1. Когда Alone
--- уходит в другую зону (например, наверх по сюжетному событию), камера
--- игрока 1 переезжает к ней — и обе половины показывают одно и то же.
--- Признак: камера игрока 1 стоит внутри объёма камеры комнаты Alone, а не
--- комнаты Low. Тогда просим систему камер игры (SetViewOverTime) вернуть
--- игроку 1 камеру его комнаты.
-S.inCamVol = function(a, p, pad)
-  local cv = a.mEditableCameraVolume
-  if not valid(cv) then return false end
-  local c, yaw, e = boxInfo(cv)
-  local lx, ly, lz = toLocal(c, yaw, p)
-  pad = pad or 100
-  return math.abs(lx) <= e.X + pad and math.abs(ly) <= e.Y + pad and math.abs(lz) <= e.Z + pad
-end
-S.keepP1Room = function()
-  if not S.split or S.frames % 15 ~= 11 or S.boost or S.cam1Frozen or S.dyingNow then return end
-  local cm = S.pc1.PlayerCameraManager
-  local ext = false; pcall(function() ext = cm:GetOverrideExternalCamera() end)
-  if ext == true then return end
-  local r1 = pickRoomCam(S.p1:K2_GetActorLocation())
-  local r2 = pickRoomCam(S.buddy:K2_GetActorLocation())
-  if not (valid(r1) and valid(r2)) or r1 == r2 then return end
-  local cl = cm:GetCameraLocation()
-  if S.inCamVol(r2, cl, 100) and not S.inCamVol(r1, cl, 100) then
-    local ok, e = pcall(function() cm:SetViewOverTime(r1, 0.4, 0) end)
-    if not S.p1RoomAt or S.frames - S.p1RoomAt > 300 then
-      trail(string.format("камера 1: ушла в комнату Alone (%s) — возвращаю камеру комнаты Low (%s): %s",
-        r2:GetFName():ToString(), r1:GetFName():ToString(), ok and "ок" or tostring(e)))
-    end
-    S.p1RoomAt = S.frames
-  end
-end
 local function roomCamTarget()
   if CFG.room_camera == false then return nil end
   local okp, p = pcall(function() return S.buddy:K2_GetActorLocation() end)
@@ -987,7 +966,7 @@ end
 local function wantSplit()
   if S.inCutscene() then return false end
   local mode = CFG.split
-  if mode == "always" then return true end
+  if mode == "always" or S.splitAlways() then return true end
   if mode == "never" then return false end
   if mode == "auto" and not VIS.fallback then
     -- в какой «комнате» (зоне камеры игры) каждый герой
@@ -1150,7 +1129,7 @@ S.decideSplitSides = function()
     if not (ax and ay and bx and by) then return end
     local dx, dy = bx - ax, by - ay          -- в пикселях: сравнимо по обеим осям
     S.splitLR = math.abs(dx) >= math.abs(dy)
-    if CFG.split_sides == "top_bottom" then S.splitLR = false end
+    local forced = S.sidesForced(); if forced ~= nil then S.splitLR = forced end
     S.p2First = S.splitLR and (dx < 0) or (not S.splitLR and dy < 0)
     trail(string.format("экран: второй %s первого (dx=%.0f, dy=%.0f) — делю %s, второй %s",
       S.splitLR and (dx < 0 and "левее" or "правее") or (dy < 0 and "выше" or "ниже"), dx, dy,
@@ -1304,7 +1283,7 @@ local function updateSplit()
   end
   setSplitVisible(want)
   pcall(S.applySplitAspect, want)
-  if not want then S.splitLR, S.p2First = nil, false end
+  if not want then S.splitLR, S.p2First = nil, false; S.cam2External = nil end
   log(want and "экран разделён" or "экран общий")
   -- для разбора пропажи звука: состояние звука сразу и через 2 и 6 с
   S.audioProbe = { S.frames + 1, S.frames + 120, S.frames + 360 }
@@ -1412,7 +1391,8 @@ S.EN = {
   ["Экран"] = "Screen",
   ["Авто (когда не видно)"] = "Auto (split when needed)", ["По расстоянию"] = "By distance",
   ["Всегда разделён"] = "Always split", ["Всегда общий"] = "Always shared",
-  ["Разделение"] = "Split", ["Авто (как стоят герои)"] = "Auto (by where heroes are)", ["Всегда сверху/снизу"] = "Always top/bottom",
+  ["Разделение"] = "Split", ["Авто (как стоят герои)"] = "Auto (by where heroes are)", ["Горизонтально"] = "Horizontal", ["Вертикально"] = "Vertical",
+  ["Всегда горизонтально"] = "Always horizontal", ["Всегда вертикально"] = "Always vertical",
   ["Делить экран с расстояния"] = "Split at distance", ["Делить экран с"] = "Split at",
   ["Кнопки игрока 2  >"] = "Player 2 buttons  >", ["Кнопки игрока 2"] = "Player 2 buttons",
   ["Сбросить настройки"] = "Reset settings", ["Закрыть  (F9)"] = "Close  (F9)",
@@ -3061,15 +3041,17 @@ S.freezeCam1 = function(on)
     S.cam1Frozen = false
     S.cam1FixLoc, S.cam1FixRot = nil, nil
     -- быстро вернуть обычную камеру комнаты (без долгого «подъезда»)
+    S.camSelf = true
     pcall(function() cm:StopExternalOverTime(0.2, 0) end)
     pcall(function() cm:ResetViewOverTime(0.3, 0) end)
+    S.camSelf = false
     pcall(function() cm:SetOverrideExternalCamera(false) end)
   end
 end
 S.applyCam1Freeze = function()
   if not (S.cam1Frozen and valid(S.cam1fix)) then return end
   local cm = S.pc1.PlayerCameraManager
-  local ok1, e1 = pcall(function() cm:StopExternalOverTime(0, 0) end)
+  S.camSelf = true; local ok1, e1 = pcall(function() cm:StopExternalOverTime(0, 0) end); S.camSelf = false
   local ok2, e2 = true, nil
   local ok3, e3 = pcall(function() S.pc1:SetViewTargetWithBlend(S.cam1fix, 0, 0, 0, false) end)
   trail(string.format("камера 1: заморозка (внешняя=%s, переход=%s%s, вид=%s)", tostring(ok1), tostring(ok2), ok2 and "" or (" " .. tostring(e2)), tostring(ok3)))
@@ -3111,7 +3093,7 @@ S.holdCam1 = function()
   -- место подсадки переключает камеру игрока на свою «камеру подсадки» —
   -- пока подсаживает игрок 1, не даём ей это сделать
   if S.frames % 5 == 0 then
-    pcall(function() S.pc1.PlayerCameraManager:StopExternalOverTime(0, 0) end)
+    S.camSelf = true; pcall(function() S.pc1.PlayerCameraManager:StopExternalOverTime(0, 0) end); S.camSelf = false
   end
   -- камера игры без героя может «цепляться» за сам контроллер игрока 1 —
   -- держим контроллер там, где стоит его герой
@@ -3400,13 +3382,55 @@ S.boostStart = function(hero, owner, spot)
 end
 S.RB = "Gamepad_RightTrigger"   -- та же кнопка, что «схватить / поднять предмет»
 -- нажатия RB обоих игроков (фронт нажатия)
+-- v9.15.4: ПОДСАДКА С КЛАВИАТУРЫ. Раньше подсадку начинал только курок RT
+-- геймпада. Теперь — та же кнопка, что «схватить» у этого игрока:
+--  * игрок 2 на клавиатуре — его клавиша «схватить» из настроек (keyboard.grab);
+--  * игрок 1 на клавиатуре — клавиши действия «схватить» из настроек ввода
+--    самой игры (ищем по имени действия; можно задать boost_key_p1 вручную).
+S.p1GrabKeys = function()
+  if S.p1GrabKeyList then return S.p1GrabKeyList end
+  local list, names = {}, {}
+  if type(CFG.boost_key_p1) == "string" and CFG.boost_key_p1 ~= "" then
+    list[1] = CFG.boost_key_p1
+  else
+    pcall(function()
+      local ins = StaticFindObject("/Script/Engine.Default__InputSettings")
+      ins.ActionMappings:ForEach(function(_, el)
+        pcall(function()
+          local m = el:get()
+          local an = m.ActionName:ToString()
+          local kn = m.Key.KeyName:ToString()
+          if an:lower():find("grab") then
+            names[#names + 1] = an .. "=" .. kn
+            if not kn:find("^Gamepad") then list[#list + 1] = kn end
+          end
+        end)
+      end)
+    end)
+  end
+  S.p1GrabKeyList = list
+  trail(string.format("подсадка: клавиши игрока 1 для подсадки: %s (действия игры: %s)", #list > 0 and table.concat(list, ", ") or "не нашёл", #names > 0 and table.concat(names, ", ") or "нет"))
+  return list
+end
+-- держит ли игрок кнопку «схватить» (для подсадки); pc — его контроллер
+S.grabDown = function(isP1)
+  if isP1 then
+    local pc = S.pc1
+    if isDown(pc, S.RB) or analog(pc, "Gamepad_RightTriggerAxis") > 0.35 then return true end
+    -- клавиатура у игрока 1, только если она не отдана игроку 2
+    if CFG.device ~= "keyboard" then
+      for _, k in ipairs(S.p1GrabKeys()) do if isDown(pc, k) then return true end end
+    end
+    return false
+  end
+  if CFG.device == "keyboard" then return isDown(S.pc1, CFG.keyboard and CFG.keyboard.grab or "RightShift") end
+  local pc = p2Source()
+  return isDown(pc, S.RB) or analog(pc, "Gamepad_RightTriggerAxis") > 0.35
+end
 S.rbEdges = function()
   -- Курок читаем как «ось»: когда герой переходит к ИИ и обратно, игра
   -- сбрасывает «нажатые кнопки», и удержание курка как кнопки теряется.
-  local function held(pc)
-    return analog(pc, "Gamepad_RightTriggerAxis") > 0.35 or isDown(pc, S.RB)
-  end
-  local r1, r2 = held(S.pc1), held(p2Source())
+  local r1, r2 = S.grabDown(true), S.grabDown(false)
   local e1, e2 = r1 and not S.prevRB1, r2 and not S.prevRB2
   S.prevRB1, S.prevRB2 = r1, r2
   -- сколько кадров курок держат (для начала подсадки)
@@ -3441,9 +3465,10 @@ S.boostTick = function(e1, e2)
   -- движения курка его не видно. Поэтому отпусканием считаем либо явное
   -- отпускание (курок был виден и пропал), либо момент, когда курок почти
   -- отпущен (маленькое значение оси — палец уже отпускает).
-  local pc = (b.owner == S.pc1) and S.pc1 or p2Source()
+  local isP1 = (b.owner == S.pc1)
+  local pc = isP1 and S.pc1 or p2Source()
   local v = analog(pc, "Gamepad_RightTriggerAxis")
-  local bd = isDown(pc, S.RB)
+  local bd = S.grabDown(isP1) and v <= 0.001 or isDown(pc, S.RB)
   local held = true
   -- сразу после передачи героя ИИ игра «забывает» зажатый курок и шлёт 0;
   -- это не отпускание. Удержание засчитываем только после этого момента.
@@ -3581,7 +3606,6 @@ S.ensurePOI = function()
   return c
 end
 S.midCamTick = function()
-  pcall(S.keepP1Room)
   if S.frames % 6 == 3 then S.dyingNow = S.anyDying() end
   if CFG.shared_center == false then return end
   local c = S.ensurePOI()
@@ -3626,6 +3650,75 @@ for _, fnName in ipairs({ "AddCameraZoom", "AddCameraZoomAfterDelay", "ClearCame
       pcall(S.zoomTrack, fnName, ctx, args)
     end)
   end)
+end
+-- ОСОБЫЕ ПЛАНЫ (колесо, рычаги, стропила и т.п.). Игра включает особый план
+-- (StartExternalOverTime) у камеры игрока 1 — другой у неё нет. Когда план
+-- включил герой игрока 2, камера первого уезжала к нему, и обе половины
+-- показывали одно и то же.
+-- v9.15.4: это было исправлено в v9.10.11, но в v9.11 при чистке удалили саму
+-- функцию, а вызов (pcall) остался — и молча ничего не делал. Возвращаем.
+-- Чей план — смотрим, кто из героев ближе к направлению взгляда камеры
+-- плана. Если при разделённом экране это Alone — отменяем план у камеры
+-- игрока 1 и показываем его во второй половине. На общем экране план
+-- остаётся как есть: его видят оба. split_ext_to_p2 = false выключает.
+S.extSubject = function(cam)
+  local cl, cr = cam:K2_GetActorLocation(), cam:K2_GetActorRotation()
+  pcall(function()
+    local cc = cam.CameraComponent
+    if not valid(cc) then cc = cam.mCameraComponent end
+    if valid(cc) then cl, cr = cc:K2_GetComponentLocation(), cc:K2_GetComponentRotation() end
+  end)
+  local fy, fp = math.rad(cr.Yaw), math.rad(cr.Pitch)
+  local fx, fyv, fz = math.cos(fp) * math.cos(fy), math.cos(fp) * math.sin(fy), math.sin(fp)
+  local function ang(h)
+    local p = h:K2_GetActorLocation()
+    local dx, dy, dz = p.X - cl.X, p.Y - cl.Y, p.Z + 40 - cl.Z
+    local l = math.sqrt(dx * dx + dy * dy + dz * dz); if l < 1 then return 0 end
+    return math.deg(math.acos(clamp((dx * fx + dy * fyv + dz * fz) / l, -1, 1)))
+  end
+  local aL, aA = ang(S.p1), ang(S.buddy)
+  return aA < aL, aL, aA
+end
+S.hookExternalCam = function()
+  if S.extHookOk then return end
+  local base = "/Script/CameraSystemRuntime.CameraManager:"
+  local okA = pcall(function()
+    RegisterHook(base .. "StartExternalOverTime", function(ctx, camP, timeP, easeP)
+      if S.camSelf then return end
+      local cm, cam, ease = nil, nil, 0
+      pcall(function() cm = ctx:get() end)
+      pcall(function() cam = camP:get() end)
+      pcall(function() ease = easeP:get() end)
+      if not (S.coop and S.split and CFG.split_ext_to_p2 ~= false and valid(cm) and valid(S.pc1) and cm == S.pc1.PlayerCameraManager and valid(cam)) then return end
+      local ok, alone, aL, aA = pcall(S.extSubject, cam)
+      local nm = ""; pcall(function() nm = cam:GetFName():ToString() end)
+      if not (ok and alone) then
+        trail(string.format("камера 1: особый план %s — для Low (Low %.0f°, Alone %.0f° от взгляда), оставил", nm, aL or -1, aA or -1))
+        return
+      end
+      S.cam2External = cam; S.camSnap = true; RC.pickAt = 0
+      trail(string.format("камера 1: особый план %s — для Alone (Low %.0f°, Alone %.0f° от взгляда): отдал второй половине, у игрока 1 отменил", nm, aL, aA))
+      local function undo()
+        S.camSelf = true
+        pcall(function() cm:StopExternalOverTime(0.3, ease) end)
+        S.camSelf = false
+      end
+      if ExecuteWithDelay then ExecuteWithDelay(30, function() ExecuteInGameThread(undo) end) else undo() end
+    end)
+  end)
+  pcall(function()
+    RegisterHook(base .. "StopExternalOverTime", function(ctx)
+      if S.camSelf then return end
+      local cm = nil; pcall(function() cm = ctx:get() end)
+      if valid(S.pc1) and cm == S.pc1.PlayerCameraManager and S.cam2External then
+        -- игра сама закончила план — второй возвращается к своей комнате
+        S.cam2External = nil; RC.pickAt = 0; S.camSnap = true
+        trail("камера 2: особый план закончился — снова своя комната")
+      end
+    end)
+  end)
+  S.extHookOk = okA
+  log(okA and "камера: особые планы перехвачены" or "камера: не удалось перехватить особые планы")
 end
 -- ВРАГИ И ИГРОК 2. Игра даёт врагам ловить только героя игрока 1: напарника
 -- (в одиночной игре это ИИ) они лишь преследуют. Поэтому, если враг вплотную
@@ -3989,6 +4082,33 @@ S.chaseTick = function(en, key, cn, dA, zA, dL, zL)
   -- (в логе мини-кин стоял в 0,9–1,5 м от Alone с CanAttack=false). Пока
   -- Alone прямо перед ним — включаем; если за секунду он так и не схватил,
   -- просим игру «поймать» Alone так же, как она ловит Low.
+  -- v9.15.4: ВРАГ «ГОНИТСЯ» ЗА ALONE, НО НЕ ПОВОРАЧИВАЕТСЯ К НЕЙ. По журналу
+  -- великан в погоне за Alone смотрел на Low (2–12° от взгляда), а схватить
+  -- может только прямо перед собой (±5°). Поворачивает врага узел игры
+  -- «повернуться к цели» (BPC_RotateToTargetPlayer), и в одиночной игре
+  -- целью ему игра даёт только Low — как и с паучихой: ловит второго, только
+  -- когда первый рядом. Поэтому, пока враг гонится за Alone и она в пределах
+  -- его захвата, вызываем тот же узел игры с теми же параметрами, что игра
+  -- использует для Low, но с целью Alone. Дальше игра сама решает и ловит.
+  if tgt == S.buddy and B("Chase") and not B("PlayerGrabbed") and not S.dyingNow and CFG.enemy_turn_to_p2 ~= false then
+    pcall(function()
+      local el, bl = en:K2_GetActorLocation(), S.buddy:K2_GetActorLocation()
+      local dx, dy = bl.X - el.X, bl.Y - el.Y
+      local d = math.sqrt(dx * dx + dy * dy)
+      if d > (CFG.enemy_turn_dist or 600) then st.turnAt = nil; return end
+      local rc = en.BPC_RotateToTargetPlayer
+      if not valid(rc) then return end
+      local dt = st.turnAt and math.min((S.frames - st.turnAt) / 60, 0.1) or (1 / 60)
+      st.turnAt = S.frames
+      local ok, e = pcall(function() rc:RUN_RotateToTargetActor(en.CapsuleComponent, S.buddy.CapsuleComponent, 2.55, 0.5, dt, 5) end)
+      if not st.turnLogged or not ok then
+        st.turnLogged = true
+        trail(string.format("погоня: %s гонится за Alone (%.0f см) — поворачиваю его к ней узлом игры (%s)", cn, d, ok and "ок" or tostring(e)))
+      end
+    end)
+  else
+    st.turnAt = nil
+  end
   if tgt == S.buddy and B("Chase") then
     local el, bl = en:K2_GetActorLocation(), S.buddy:K2_GetActorLocation()
     local dx, dy = bl.X - el.X, bl.Y - el.Y
@@ -4423,7 +4543,8 @@ do
     "Gamepad_RightThumbstick","Gamepad_LeftThumbstick" }) do CAPTURE_KEYS[#CAPTURE_KEYS + 1] = n end
 end
 
-S.SPLIT_SIDES = { { "auto", "Авто (как стоят герои)" }, { "top_bottom", "Всегда сверху/снизу" } }
+S.SPLIT_SIDES = { { "auto", "Авто (как стоят герои)" }, { "top_bottom", "Горизонтально" }, { "left_right", "Вертикально" },
+  { "always_top_bottom", "Всегда горизонтально" }, { "always_left_right", "Всегда вертикально" } }
 local SPLIT_MODES = { { "auto", "Авто (когда не видно)" }, { "distance", "По расстоянию" }, { "always", "Всегда разделён" }, { "never", "Всегда общий" } }
 local LAYOUTS = { { "top_bottom", "Сверху и снизу" }, { "left_right", "Слева и справа" } }
 local DEVICES = { { "keyboard", "Клавиатура (правая часть)" }, { "gamepad", "Геймпад" } }
@@ -5227,4 +5348,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.15.3 загружен. F9 — меню кооператива")
+log("v9.15.4 загружен. F9 — меню кооператива")

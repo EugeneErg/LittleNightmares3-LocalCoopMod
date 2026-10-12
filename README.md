@@ -21,13 +21,13 @@ Little Nightmares III only offers online co-op. LN3Couch lets a second person on
 
 ### Two real players
 - **Player 2 plays the companion with their own gamepad**, using the game's standard controls. Walk, run, crouch, jump, grab, carry and throw items, push and pull boxes, use the wrench or the bow, climb — everything Player 1 can do.
-- **Boosting each other.** At the places where the game has a boost, hold the grab button (RT). Whoever holds it first gives the boost, the other player jumps. Either player can give the boost, and it plays the game's own animations. Hold the trigger for a moment (about half a second); a quick tap does not start a boost. If the hero giving the boost holds something (Low's flashlight, Alone's wrench), it is put away first, as if the button were pressed; take it out again after the boost.
+- **Boosting each other.** At the places where the game has a boost, hold the grab button (RT on a gamepad; on the keyboard, the game's grab key for Player 1 — left mouse button by default — and Player 2's grab key). Whoever holds it first gives the boost, the other player jumps. Either player can give the boost, and it plays the game's own animations. Hold the trigger for a moment (about half a second); a quick tap does not start a boost. If the hero giving the boost holds something (Low's flashlight, Alone's wrench), it is put away first, as if the button were pressed; take it out again after the boost.
 - **Enemies hunt both of you.** In the single-player game enemies only catch the player and leave the AI companion alone. With LN3Couch the second hero is a real player, so enemies catch either of you, in normal encounters and in chases.
 
 ### Camera and screen
 - **Shared screen that frames both players.** When you are together, the game's own camera takes both heroes into account, not just Player 1.
 - **Split screen when you need it.** When you are in different rooms, or Player 2 leaves Player 1's view, the screen splits. Walk back together and it merges again.
-- **Smart split direction.** The split follows where the heroes are, like in *Split Fiction*: side by side splits left/right, one above the other splits top/bottom, and each player gets the half on their own side. Prefer a fixed layout? Switch it to always top/bottom.
+- **Smart split direction.** The split follows where the heroes are, like in *Split Fiction*: side by side splits left/right, one above the other splits top/bottom, and each player gets the half on their own side. Prefer a fixed layout? Choose horizontal (top/bottom) or vertical (left/right). Want your own view all the time? Choose always horizontal or always vertical: the screen stays split even when the heroes are together.
 - **No black bars.** Each half of the split screen is filled edge to edge.
 - **Room-aware camera for Player 2.** On the split screen, Player 2's camera follows the same per-room rules as the game's camera: set angles, room bounds, smooth transitions.
 - **Look around** with the right stick, each player in their own view.
@@ -79,7 +79,7 @@ Everything is in the **Co-op** menu (main menu, pause menu or **F9**):
 | Player 2 | on / off (remembered between sessions) |
 | Player 2 controls | gamepad / right side of the keyboard |
 | Gamepad #1 belongs to | Player 1 / Player 2 |
-| Split | Auto (by where the heroes are) / Always top/bottom |
+| Split | Auto (by where the heroes are) / Horizontal / Vertical / Always horizontal / Always vertical |
 | Player 2 buttons | remap Player 2's controls |
 
 Settings are stored in `ue4ss\Mods\LN3Couch\settings.lua`.
