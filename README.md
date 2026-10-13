@@ -84,7 +84,7 @@ Everything is in the **Co-op** menu (main menu, pause menu or **F9**):
 | Split | Auto (by where the heroes are) / Horizontal / Vertical / Always horizontal / Always vertical |
 | Player 2 buttons | remap Player 2's controls |
 
-Settings are stored in `ue4ss\Mods\LN3Couch\settings.lua`.
+Settings are stored in `ue4ss\Mods\LN3Couch\settings.lua`. The mod creates it the first time you change a setting; defaults come from `Scripts\config.lua`. Updating the mod keeps your settings.
 
 ## How it works
 
