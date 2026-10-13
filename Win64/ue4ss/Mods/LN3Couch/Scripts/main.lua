@@ -1,4 +1,4 @@
--- LN3Couch v9.15.4 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.15.5 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -940,6 +940,35 @@ local function buddyScreenPos(hero)
 end
 
 local VIS = { hiddenFor = 0, shownFor = 0, fallback = false }
+-- Узел врага «повернуться к цели» (BPC_RotateToTargetPlayer): запоминаем,
+-- у каких врагов его вызывает сама игра и с какими параметрами
+S.turnSeen = {}
+S.watchTurnNode = function(rc)
+  if S.turnHooked then return end
+  S.turnHooked = true
+  pcall(function()
+    rc:GetClass():ForEachFunction(function(f)
+      pcall(function()
+        if f:GetFName():ToString() ~= "RUN_RotateToTargetActor" then return end
+        local full = f:GetFullName():gsub("^Function ", "")
+        RegisterHook(full, function(ctx, ac, tc, blend, speed, dts, fnb)
+          if S.turnSelf then return end
+          pcall(function()
+            local comp = ctx:get()
+            local cls = clsName(comp:GetOwner())
+            if S.turnSeen[cls] then return end
+            local rec = { blend = blend:get(), speed = speed:get(), fn = fnb:get() }
+            if type(rec.blend) == "number" and type(rec.speed) == "number" and type(rec.fn) == "number" then
+              S.turnSeen[cls] = rec
+              trail(string.format("погоня: игра поворачивает %s узлом «к цели» (%.2f/%.2f/%d)", cls, rec.blend, rec.speed, rec.fn))
+            end
+          end)
+        end)
+        trail("погоня: слежу, кого игра поворачивает узлом «к цели»")
+      end)
+    end)
+  end)
+end
 local function insideBox(p, m) return p and p.inFront and p.x > m and p.x < 1 - m and p.y > m and p.y < 1 - m end
 
 -- Заставка (ролик на движке): героями управляет «секвенсор» игры — он
@@ -1063,6 +1092,13 @@ local function wantSplit()
       if seen and not p1Out then VIS.hiddenFor = math.max(0, VIS.hiddenFor - 3) else VIS.hiddenFor = VIS.hiddenFor + 1 end
       -- делим, если напарник ушёл из кадра или в другую комнату
       -- если и сам игрок 1 выпал из кадра — делим быстрее
+      -- для разбора: напарник не виден, а экран не делится — почему
+      if (not seen or p1Out) and (not VIS.whyAt or S.frames - VIS.whyAt > 120) then
+        VIS.whyAt = S.frames
+        trail(string.format("экран (общий): второй виден=%s (%s, %s, перед камерой=%s), первый за кадром=%s, счёт %d, разные комнаты %d",
+          tostring(seen), p and p.x and string.format("%.2f", p.x) or "-", p and p.y and string.format("%.2f", p.y) or "-",
+          tostring(p and p.inFront), tostring(p1Out), VIS.hiddenFor, VIS.diffFor or 0))
+      end
       if p1Out and VIS.hiddenFor >= 8 then return true end
       return VIS.hiddenFor >= 12 or VIS.diffFor >= 20
     end
@@ -1241,7 +1277,17 @@ local function applyGamepadRouting()
 end
 
 local function updateSplit()
-  if not usablePC2(S.pc2) then return end
+  if not usablePC2(S.pc2) then
+    -- для разбора: вид игрока 2 не готов — делить нечем
+    if not S.pc2WhyAt or S.frames - S.pc2WhyAt > 300 then
+      S.pc2WhyAt = S.frames
+      local a, b = "?", "?"
+      pcall(function() a = tostring(valid(S.pc2)) end)
+      pcall(function() b = tostring(valid(S.pc2.Player)) .. "/" .. tostring(valid(S.pc2.PlayerCameraManager)) end)
+      trail("экран: вид игрока 2 не готов (контроллер " .. a .. ", игрок/камера " .. b .. ") — разделить нельзя")
+    end
+    return
+  end
   if S.exposureResetAt and S.frames >= S.exposureResetAt then S.exposureResetAt = nil; if not S.nativeCam then setFastExposure(false) end end
   if S.split and not S.nativeCam and S.frames % 4 == 1 then
     local okF, eF = pcall(S.cam2Focus)
@@ -1250,6 +1296,10 @@ local function updateSplit()
   -- камеры новых комнат, подгрузившихся при разделённом экране, — тоже без полос
   if S.split and S.frames % 120 == 0 then pcall(S.applySplitAspect, true) end
   local want = wantSplit()
+  if want and not S.split and (not S.wantWhyAt or S.frames - S.wantWhyAt > 120) and now() - S.splitChangedAt < 1.0 then
+    S.wantWhyAt = S.frames
+    trail(string.format("экран: хочу разделить, но после прошлого переключения прошло %.1f с", now() - S.splitChangedAt))
+  end
   if want == S.split or now() - S.splitChangedAt < 1.0 then return end
   S.splitChangedAt = now()
   if want then
@@ -1917,6 +1967,7 @@ local function takeBuddy()
   return true
 end
 local function releaseBuddy()
+  pcall(function() S.bowRestore() end)
   if S.boost then S.boostEnd("кооператив выключен") end
   if not S.real then return end
   S.real = false
@@ -2073,6 +2124,9 @@ suspendCoop = function(reason)
     end
   end
   S.coop, S.split, S.resumeCoop, S.cmd, S.throwCheck, S.detect, S.drag, S.cbox = false, false, true, nil, nil, nil, nil, nil
+  -- камеры комнат прошлого уровня после загрузки «мёртвые» — забываем их
+  RC.list, RC.listAt, RC.cur, RC.pickAt, RC.errLogged = {}, -100000, nil, 0, false
+  S.roomP1, S.roomP2 = nil, nil
   pcall(function() gms().bUseSplitscreen = false end)
 end
 if CFG.coop_enabled then S.resumeCoop = true end
@@ -2273,6 +2327,36 @@ local function weaponCmds()
   if not valid(CARRY.wcmds) then CARRY.wcmds = StaticFindObject("/Script/Kosmos.Default__KosmosPlaypalCommandsWeaponTools") end
   return CARRY.wcmds
 end
+-- Цель для лука — как у игры: мишени лука помечены KosmosTargetComponent
+-- с категорией «прицел лука» (EKosmosTargetType.BowAiming = 0, бит 1).
+-- Берём включённую мишень перед героем (в конусе), самую прямую по углу.
+S.bowTarget = function(l, fw)
+  local BOW_RANGE, BOW_CONE = CFG.bow_range or 3000, CFG.bow_cone or 50
+  local best, bestScore, bestLoc = nil, nil, nil
+  local seen, cand = 0, 0
+  for _, tc in ipairs(FindAllOf("KosmosTargetComponent") or {}) do
+    pcall(function()
+      if not valid(tc) then return end
+      local cats = tc.CurrentCategories or 0
+      if cats % 2 ~= 1 then return end                       -- не мишень лука
+      seen = seen + 1
+      if tc.bIsTargetEnabled == false then return end
+      local p = tc:K2_GetComponentLocation()
+      if tc.bShouldusePrecisePosition then pcall(function() p = tc:GetPrecisePosition() end) end
+      local dx, dy, dz = p.X - l.X, p.Y - l.Y, p.Z - l.Z
+      local dh = math.sqrt(dx * dx + dy * dy)
+      local d = math.sqrt(dh * dh + dz * dz)
+      if d > BOW_RANGE or dh < 50 then return end
+      local cosA = (dx * fw.X + dy * fw.Y) / dh / math.max(1e-3, math.sqrt(fw.X * fw.X + fw.Y * fw.Y))
+      local ang = math.deg(math.acos(math.max(-1, math.min(1, cosA))))
+      if ang > BOW_CONE then return end
+      cand = cand + 1
+      local score = ang * 100000 + d                           -- главное — угол, расстояние только при равенстве
+      if not bestScore or score < bestScore then best, bestScore, bestLoc = tc, score, p end
+    end)
+  end
+  return best, bestLoc, seen, cand
+end
 local function tryWeapon()
   local okp, l = pcall(function() return S.buddy:K2_GetActorLocation() end)
   local okf, fw = pcall(function() return S.buddy:GetActorForwardVector() end)
@@ -2281,7 +2365,21 @@ local function tryWeapon()
   local dist = isLow and 1000 or 140
   local stand = { X = l.X, Y = l.Y, Z = l.Z }
   local target = { X = l.X + fw.X * dist, Y = l.Y + fw.Y * dist, Z = l.Z + (isLow and 40 or 0) }
-  local sm, tm = placeMarker("weapStand", stand), placeMarker("weapTarget", target)
+  local tm = nil
+  if isLow then
+    local tc, tl, seen, cand = S.bowTarget(l, fw)
+    local owner = nil
+    pcall(function() owner = tc:GetOwner() end)
+    if valid(tc) and valid(owner) then
+      target, tm = { X = tl.X, Y = tl.Y, Z = tl.Z }, owner
+      trail(string.format("лук игрока 2: цель %s (%.0f см), мишеней лука в уровне %d, перед героем %d",
+        cname(owner), math.sqrt((tl.X - l.X) ^ 2 + (tl.Y - l.Y) ^ 2 + (tl.Z - l.Z) ^ 2), seen, cand))
+    else
+      trail(string.format("лук игрока 2: цели впереди нет — стреляю прямо (мишеней лука в уровне %d)", seen))
+    end
+  end
+  local sm = placeMarker("weapStand", stand)
+  if not valid(tm) then tm = placeMarker("weapTarget", target) end
   if not (valid(sm) and valid(tm)) then return false end
   return runCmd(isLow and "выстрелить из лука" or "ударить ключом", function()
     return weaponCmds():PlaypalWeaponAttack(S.buddy, sm, stand, tm, target, false, 1, 60)
@@ -2575,6 +2673,12 @@ S.installInvTrace = function()
         c:ForEachFunction(function(f)
           pcall(function()
             local fname = f:GetFName():ToString()
+            -- v9.15.5: ВЫЛЕТЫ. Раньше здесь перехватывались все функции вещи и её
+            -- родителей — в том числе внутренние функции игры (сетевые, «снимок
+            -- чекпоинта»…), а «вещью» оказывались и люки, и рычаги. Игра падала
+            -- через несколько секунд или минут. Для работы нужны только «достал»
+            -- и «убрал»; остальное — запись для разбора, только с inv_trace.
+            if CFG.inv_trace ~= true and fname ~= "OnWeaponTakeOut" and fname ~= "OnWeaponStashed" then return end
             if fname:find("^Get") or fname:find("^Is") or fname:find("^Has") or fname:find("Tick") or fname:find("Ubergraph") or fname:find("^Can") or fname:find("^Does") then return end
             local full = f:GetFullName():gsub("^Function ", "")
             RegisterHook(full, function(ctx, ...)
@@ -3764,11 +3868,21 @@ S.traceClass = function(cls)
           local watch = fname:find("Proximity") or fname:find("Grab") or fname:find("Attack") or fname:find("Behind")
             or fname:find("Hidden") or fname:find("Percieved") or fname:find("Kill") or fname:find("Player") or fname:find("Target")
           local fixer = (fname == "FindGrabAngleAndDistance" or fname == "Decide on Attack Anim")
+          -- подставлять цель есть куда только если у врага это поле — ссылка на героя
+          if fixer and not S.targetFieldOk(nil, cls) then fixer = false end
           local sensorFix = false
           local angleFix = false
           local zoneFix = ccn:find("ProximitySensor") and fname == "Run Attack Range"
           local idxParam = nil
           for i, n in ipairs(pnames) do if n == "PlayerIndex" or n == "Player Index" then idxParam = i end end
+          -- v9.15.5: ВЫЛЕТЫ. Раньше перехватывали ВСЕ функции врага и его частей
+          -- (у надсмотрщика второй главы — сотни): на каждый вызов загрузчик
+          -- модов разбирает все параметры, и на некоторых игра падала (во всех
+          -- четырёх отчётах о вылете — внутри такого перехвата). Ставим перехват
+          -- только туда, где мод что-то делает; остальное — лишь для разбора.
+          local needed = fixer or zoneFix or (idxParam and CFG.enemy_index_swap == true)
+            or CFG.enemy_diag == true or CFG.enemy_trace_log == true
+          if not needed then return end
           RegisterHook(full, function(ctx, ...)
             local hargs = { ... }
             -- покадровая лента: что у датчика перед каждой функцией (3 кадра раз в 2 с)
@@ -3852,7 +3966,34 @@ end
 -- подползая к Alone, враг меряет угол и расстояние захвата до Low (за спиной,
 -- за 14 м) — поэтому и не хватает. Перед этими замерами подставляем цель,
 -- за которой враг на самом деле гонится (Alone), если она ближе.
+-- v9.15.5: ВЫЛЕТ НА НАДСМОТРЩИКЕ ВТОРОЙ ГЛАВЫ. Все пять отчётов о падении —
+-- внутри этого перехвата. У «стоячего» надсмотрщика своя функция захвата, и
+-- «Current Target Local» у него, видимо, не ссылка на героя — обращение к ней
+-- роняло игру (загрузчик модов читает такое поле как ссылку). Поэтому сначала
+-- по описанию класса проверяем, что поле — ссылка на объект; иначе не трогаем.
+S.ctlOk = {}
+S.targetFieldOk = function(en, clsArg)
+  local cls = clsArg or en:GetClass()
+  local key = cls:GetFName():ToString()
+  if S.ctlOk[key] ~= nil then return S.ctlOk[key] end
+  local kind = nil
+  local c, depth = cls, 0
+  while valid(c) and depth < 8 and not kind do
+    pcall(function()
+      c:ForEachProperty(function(pr)
+        if pr:GetFName():ToString() == "Current Target Local" then kind = pr:GetClass():GetFName():ToString() end
+      end)
+    end)
+    local ok, sup = pcall(function() return c:GetSuperStruct() end)
+    c = ok and sup or nil; depth = depth + 1
+  end
+  local okField = kind == "ObjectProperty"
+  S.ctlOk[key] = okField
+  trail(string.format("враги: у %s поле «Current Target Local» — %s, %s", key, kind or "нет", okField and "подставляю цель" or "не трогаю"))
+  return okField
+end
 S.fixTarget = function(en)
+  if not valid(en) or not S.targetFieldOk(en) then return end
   if not S.wantAlone(en) then return end
   local cur = nil; pcall(function() cur = en["Current Target Local"] end)
   if cur ~= S.buddy then
@@ -3868,6 +4009,57 @@ end
 -- («Single Player Player in Attack Range», PlayerIndex=0). Для Alone его
 -- «Current Target» пустой, «в зоне захвата» не включается, атаки нет. Перед
 -- проверкой зоны атаки ставим датчику цель, за которой враг гонится.
+-- v9.15.5: ОБЩЕЕ ПРАВИЛО ДЛЯ ВСЕХ ВРАГОВ. В одиночной игре каждый враг
+-- проверяет «в зоне захвата ли игрок», беря героя через «игрок номер 0»
+-- (GetPlayerPawn/GetPlayerCharacter с номером 0) — а это всегда герой
+-- первого игрока. Поэтому любой враг ловил второго, только когда первый
+-- подходил близко. Подгонять каждого врага отдельно не нужно: пока враг
+-- гонится за вторым игроком, на его вопрос «кто игрок 0» отвечаем «герой
+-- второго». Остальным (камера, интерфейс, другие враги) — как было.
+S.p0For, S.p0Active, S.p0Logged = {}, -100000, {}
+S.p0Enemy = function(o)
+  if not valid(o) then return nil end
+  if not S.antCls then S.antCls = StaticFindObject("/Script/Kosmos.KosmosAntagonistCharacter") end
+  if o:IsA(S.antCls) then return o end
+  local ow = nil
+  pcall(function() ow = o:GetOwner() end)
+  if valid(ow) and ow:IsA(S.antCls) then return ow end
+  pcall(function() if o:IsA(StaticFindObject("/Script/Engine.Controller")) then ow = o.Pawn end end)
+  if valid(ow) and ow:IsA(S.antCls) then return ow end
+  return nil
+end
+S.installP0Hook = function()
+  if S.p0Hooked or CFG.enemy_p0_swap == false then return end
+  S.p0Hooked = true
+  -- параметры загрузчик отдаёт как (ответ, кто спрашивает, номер);
+  -- разбираем по типам: герой — ответ игры, иной объект — кто спрашивает
+  local function post(ctx, ...)
+    if S.frames - S.p0Active > 30 then return nil end
+    local ret, caller = nil, nil
+    for _, a in ipairs({ ... }) do
+      pcall(function()
+        local v = a:get()
+        if type(v) ~= "userdata" or not valid(v) then return end
+        if v == S.p1 or v == S.buddy then ret = v elseif not caller then caller = v end
+      end)
+    end
+    if ret ~= S.p1 or not caller then return nil end
+    local en = S.p0Enemy(caller)
+    if not en then return nil end
+    local t = nil
+    pcall(function() t = S.p0For[en:GetAddress()] end)
+    if not (t and S.frames - t < 30 and valid(S.buddy)) then return nil end
+    if not S.p0Logged["ok" .. cname(en)] then
+      S.p0Logged["ok" .. cname(en)] = true
+      trail("враги: " .. cname(en) .. " спросил «игрока 0» — ответил «герой второго»")
+    end
+    return S.buddy
+  end
+  for _, fn in ipairs({ "GetPlayerPawn", "GetPlayerCharacter" }) do
+    local ok, e = pcall(function() RegisterHook("/Script/Engine.GameplayStatics:" .. fn, function() end, post) end)
+    trail(string.format("враги: «игрок 0» для врагов, гонящихся за вторым, — перехват %s (%s)", fn, ok and "ок" or tostring(e)))
+  end
+end
 S.wantAlone = function(en)
   if CFG.enemies_catch_p2 == false or not S.coop or not valid(en) or not valid(S.buddy) or not valid(S.p1) then return false end
   local target = nil
@@ -4022,8 +4214,18 @@ S.chaseTick = function(en, key, cn, dA, zA, dL, zL)
   local st = E.ch[key] or {}; E.ch[key] = st
   local bb = en.Controller.Blackboard
   if not valid(bb) then return end
+  if not S.turnHooked then pcall(function() local rc = en.BPC_RotateToTargetPlayer; if valid(rc) then S.watchTurnNode(rc) end end) end
   local who = function(o) return (o == S.p1 and "Low") or (o == S.buddy and "Alone") or (valid(o) and cname(o)) or "пусто" end
   local tgt = nil; pcall(function() tgt = bb:GetValueAsObject(FName("CharacterPercieved")) end)
+  if tgt == S.buddy and S.real and CFG.enemy_p0_swap ~= false then
+    S.installP0Hook()
+    S.p0For[en:GetAddress()] = S.frames
+    S.p0Active = S.frames
+    if not S.p0Logged[cn] then
+      S.p0Logged[cn] = true
+      trail(string.format("враги: %s гонится за вторым игроком — для его проверок «игрок 0» теперь герой второго", cn))
+    end
+  end
   -- разбор: раз в 0,5 с, если у врага что-то поменялось (цель, режимы, взгляд)
   if S.frames - (st.logAt or -999) >= 30 then
     st.logAt = S.frames
@@ -4072,6 +4274,26 @@ S.chaseTick = function(en, key, cn, dA, zA, dL, zL)
   if CFG.enemy_retarget == false or not S.real then return end
   local function B(n) local ok, v = pcall(function() return bb:GetValueAsBool(FName(n)) end); return ok and v == true end
   if B("IsDead") or B("Sleeping") or B("PlayerGrabbed") or S.buddyHidden() or zA > 250 then return end
+  -- v9.15.5: ВЫЛЕТ. Враг уже схватил героя (идёт захват/сцена смерти), а мы в
+  -- тот же миг давали ему «можно атаковать» и поворачивали — вторая атака
+  -- поверх захвата роняла игру. Проверяем прямо сейчас, а не раз в 6 кадров.
+  local busy = false
+  pcall(function() busy = S.anyDying() end)
+  if not busy then
+    for _, h in ipairs({ S.p1, S.buddy }) do
+      pcall(function()
+        local m = h:GetCurrentMontage()
+        local mn = valid(m) and m:GetFName():ToString() or ""
+        if mn:find("Death") or mn:find("Grabbed") or mn:find("Grab_Success") or mn:find("Kill") then busy = true end
+      end)
+    end
+  end
+  if busy then
+    st.turnAt, st.zoneSince = nil, nil
+    if not st.busyLogged then st.busyLogged = true; trail(string.format("погоня: %s — герой уже схвачен, не вмешиваюсь", cn)) end
+    return
+  end
+  st.busyLogged = nil
   -- Враг «видит» только героя игрока 1 (так сделано для одиночной игры —
   -- в логе мини-кин в 2 м от Alone её не замечал, а Low — с 3 м). Если Alone
   -- в пределах, с которых враг замечает Low (по умолчанию 3,5 м), ближе
@@ -4098,12 +4320,26 @@ S.chaseTick = function(en, key, cn, dA, zA, dL, zL)
       if d > (CFG.enemy_turn_dist or 600) then st.turnAt = nil; return end
       local rc = en.BPC_RotateToTargetPlayer
       if not valid(rc) then return end
+      S.watchTurnNode(rc)
+      -- v9.15.5: узел вызываем, только если игра сама поворачивает им ЭТОГО
+      -- врага (видели её вызов), и с её же параметрами. Надсмотрщик второй
+      -- главы этим узлом не пользуется — наш вызов с чужими параметрами ронял игру.
+      local gp = S.turnSeen[cn]
+      if not gp then
+        if not st.turnSkipLogged then
+          st.turnSkipLogged = true
+          trail(string.format("погоня: %s гонится за Alone (%.0f см) — игра не поворачивает его узлом «к цели», не трогаю", cn, d))
+        end
+        return
+      end
       local dt = st.turnAt and math.min((S.frames - st.turnAt) / 60, 0.1) or (1 / 60)
       st.turnAt = S.frames
-      local ok, e = pcall(function() rc:RUN_RotateToTargetActor(en.CapsuleComponent, S.buddy.CapsuleComponent, 2.55, 0.5, dt, 5) end)
+      S.turnSelf = true
+      local ok, e = pcall(function() rc:RUN_RotateToTargetActor(en.CapsuleComponent, S.buddy.CapsuleComponent, gp.blend, gp.speed, dt, gp.fn) end)
+      S.turnSelf = false
       if not st.turnLogged or not ok then
         st.turnLogged = true
-        trail(string.format("погоня: %s гонится за Alone (%.0f см) — поворачиваю его к ней узлом игры (%s)", cn, d, ok and "ок" or tostring(e)))
+        trail(string.format("погоня: %s гонится за Alone (%.0f см) — поворачиваю его к ней узлом игры с её параметрами %.2f/%.2f/%d (%s)", cn, d, gp.blend, gp.speed, gp.fn, ok and "ок" or tostring(e)))
       end
     end)
   else
@@ -4286,9 +4522,83 @@ S.enemyTick = function()
   end
 end
 
+-- угол точки t от центра кадра камеры (доли половины угла обзора)
+S.camFrac = function(cl, cr, fov, t)
+  local yaw, pitch = math.rad(cr.Yaw), math.rad(cr.Pitch)
+  local fx, fy, fz = math.cos(pitch) * math.cos(yaw), math.cos(pitch) * math.sin(yaw), math.sin(pitch)
+  local rx, ry = -math.sin(yaw), math.cos(yaw)
+  local ux, uy, uz = -math.sin(pitch) * math.cos(yaw), -math.sin(pitch) * math.sin(yaw), math.cos(pitch)
+  local dx, dy, dz = t.X - cl.X, t.Y - cl.Y, t.Z - cl.Z
+  local f = dx * fx + dy * fy + dz * fz
+  if f <= 1 then return nil end
+  local th = math.tan(math.rad((fov or 60) / 2))
+  return (dx * rx + dy * ry) / f / th, (dx * ux + dy * uy + dz * uz) / f / (th / S.sharedAspect)
+end
+-- v9.15.5: ЛУК У ИГРОКА 2. Цель лука выбирает игра, и мишень годится, только
+-- если видна «на экране» — а экран для игры это камера игрока 1. На
+-- разделённом экране мишень на половине второго (веревка наверху) для игры
+-- «за кадром», и лук её не берёт. Поэтому, пока лук у героя второго игрока,
+-- мишеням лука, которые видны в его камере, снимаем эту проверку экрана —
+-- дальше цель выбирает сама игра, как обычно. Когда лук убран или экран
+-- общий — возвращаем как было.
+S.bowFix = { set = {}, list = {}, at = -10000 }
+S.bowRestore = function()
+  for tc, was in pairs(S.bowFix.set) do
+    pcall(function() if valid(tc) then tc.bShouldCheckForOnScreen = was end end)
+  end
+  S.bowFix.set = {}
+end
+S.bowAimTick = function()
+  if S.frames % 3 ~= 0 then return end
+  local bf = S.bowFix
+  local active = false
+  if S.split and CFG.bow_p2_screen ~= false and valid(S.cam2) and valid(S.buddy) then
+    if S.frames - bf.at > 120 or not valid(bf.bow) then
+      bf.at = S.frames
+      bf.bow = nil
+      for _, b in ipairs(FindAllOf("BP_Bow_C") or {}) do
+        pcall(function()
+          local h = nil
+          pcall(function() h = b.Character end)
+          if not valid(h) then h = b:GetOwner() end
+          if h == S.buddy then bf.bow = b end
+        end)
+      end
+      bf.list = {}
+      if bf.bow then
+        for _, tc in ipairs(FindAllOf("KosmosTargetComponent") or {}) do
+          pcall(function() if valid(tc) and (tc.CurrentCategories or 0) % 2 == 1 then bf.list[#bf.list + 1] = tc end end)
+        end
+      end
+    end
+    pcall(function() active = valid(bf.bow) and (bf.bow.bHidden == false or bf.bow:IsInUse() == true) end)
+  end
+  if not active then
+    if next(bf.set) then S.bowRestore(); trail("лук игрока 2: проверку экрана у мишеней вернул") end
+    return
+  end
+  local c2l, c2r, c2f = S.cam2:K2_GetActorLocation(), S.cam2:K2_GetActorRotation(), 60
+  pcall(function() c2f = S.cam2.CameraComponent.FieldOfView end)
+  local added = 0
+  for _, tc in ipairs(bf.list) do
+    pcall(function()
+      if not valid(tc) then return end
+      local x, y = S.camFrac(c2l, c2r, c2f, tc:K2_GetComponentLocation())
+      local seen = x and math.abs(x) <= 1 and math.abs(y) <= 1
+      if seen and bf.set[tc] == nil then
+        local was = tc.bShouldCheckForOnScreen
+        if was then bf.set[tc] = was; tc.bShouldCheckForOnScreen = false; added = added + 1 end
+      elseif not seen and bf.set[tc] ~= nil then
+        tc.bShouldCheckForOnScreen = bf.set[tc]; bf.set[tc] = nil
+      end
+    end)
+  end
+  if added > 0 then trail(string.format("лук игрока 2: мишеней в его кадре без проверки экрана игры: +%d", added)) end
+end
 local function applyInputReal()
   local _, _, lx, ly, p2jump, grab = readP2()
   pcall(S.midCamTick)
+  pcall(S.bowAimTick)
   pcall(S.holdCam1)
   -- для сравнения: как камера игрока 1 выглядит в обычной игре (раз в 10 с)
   pcall(S.traceFlush, S.traceNear and S.frames - S.traceNear < 30)
@@ -5348,4 +5658,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.15.4 загружен. F9 — меню кооператива")
+log("v9.15.5 загружен. F9 — меню кооператива")
