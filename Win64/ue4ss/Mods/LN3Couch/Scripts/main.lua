@@ -1,4 +1,4 @@
--- LN3Couch v9.15.6 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.15.7 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -671,7 +671,7 @@ local function roomCamTarget()
   end
   if S.frames >= RC.pickAt then
     RC.pickAt = S.frames + 10
-    local a = pickRoomCam(p)
+    local a = S.pickRoomAnyCopy(p)
     -- «липкая» комната: пока герой рядом с зоной текущей камеры (запас 2,5 м),
     -- не перескакиваем на другую — рычаги, подсадки и прыжки иначе дёргают камеру
     if a ~= RC.cur and valid(RC.cur) then
@@ -699,17 +699,34 @@ local function roomCamTarget()
     RC.p1At = S.frames + 10
     local okl, l1 = pcall(function() return S.p1:K2_GetActorLocation() end)
     RC.p1cur = nil
-    if okl then pcall(function() RC.p1cur = pickRoomCam(l1) end) end
+    if okl then pcall(function() RC.p1cur = S.pickRoomAnyCopy(l1) end) end
   end
   -- v9.15.3: и в той же зоне, что Low, камеру для Alone считаем по данным
   -- камеры комнаты (а не копируем камеру игрока 1): при разделении зона
   -- выбирается заново по месту Alone, и поза считается от Alone
-  local ok, loc, rot, fov = pcall(roomCamPose, RC.cur, p)
+  -- в наложенных копиях зона комнаты может быть в другой копии — считаем
+  -- позу по месту героя, перенесённому в копию этой зоны
+  local pp = p
+  if S.overlayOn then pcall(function() pp = S.toCopyOf(p, RC.cur.mEditablePlayerVolume:K2_GetComponentLocation()) end) end
+  local ok, loc, rot, fov = pcall(roomCamPose, RC.cur, pp)
   if not ok then
     if not RC.errLogged then RC.errLogged = true; log("комнатная камера: ошибка %s", tostring(loc)) end
     return nil
   end
-  if dist(loc, p) > 5000 then return nil end
+  -- v9.15.5: в наложенных копиях уровня камера комнаты стоит в другой копии
+  -- (в 200 м от героя) — игра показывает оттуда наложение. Наложения у второй
+  -- камеры нет, поэтому ставим её в копию, где сейчас Alone, на то же место
+  -- относительно копии: тот же ракурс, но видно саму Alone.
+  if S.overlayOn then
+    -- v9.15.5: кукла у Alone — вторая камера смотрит из «светлой» копии (той,
+    -- где стоит камера игры), на то же место. Иначе — из копии, где Alone.
+    -- v9.15.7: как у камеры игры — из той копии, где стоит камера игры.
+    -- Героя из другой копии движок сам дорисовывает в эту (поэтому камера,
+    -- ушедшая за героем в его копию, показывала «невидимку» с куклой).
+    local okc, cl = pcall(function() return S.pc1.PlayerCameraManager:GetCameraLocation() end)
+    loc = S.toCopyOf(loc, okc and cl or p)
+  end
+  if dist(loc, S.overlayOn and S.toCopyOf(p, loc) or p) > 5000 then return nil end
   return loc, rot, fov
 end
 -- v9.15.3: ГЕРОЙ ВСЕГДА В КАДРЕ. Камера комнаты поворачивается за героем
@@ -720,6 +737,7 @@ end
 S.keepInView = function(loc, pitch, yaw)
   local okb, bl = pcall(function() return S.buddy:K2_GetActorLocation() end)
   if not okb then return pitch, yaw end
+  if S.overlayOn then bl = S.toCopyOf(bl, loc) end   -- Alone в той копии, где камера
   local dx, dy, dz = bl.X - loc.X, bl.Y - loc.Y, (bl.Z + 40) - loc.Z
   local h = math.sqrt(dx * dx + dy * dy)
   if h < 50 then return pitch, yaw end
@@ -747,6 +765,25 @@ updateCam2Pose = function()
     local bl = S.buddy:K2_GetActorLocation()
     local hidden = false; pcall(function() hidden = S.buddy:IsHidden() end)
     local jump = S.lastBuddyLoc and dist(bl, S.lastBuddyLoc) or 0
+    -- v9.15.5: переход Alone в другую копию уровня (наложенные копии) — это
+    -- не смерть и не перенос: она стоит на том же месте, только в другой
+    -- копии. Камеру не замораживаем, а переносим вместе с ней на тот же
+    -- сдвиг — картинка у второго игрока не прыгает и не показывает чужое.
+    local g = S.overlayOn and S.copy and S.copy.gap
+    local holderIsBuddy = false
+    if g then pcall(function() holderIsBuddy = (S.lightHolder() == S.buddy) end) end
+    if g and S.lastBuddyLoc and not hidden then
+      local dz = bl.Z - S.lastBuddyLoc.Z
+      local dh = math.sqrt((bl.X - S.lastBuddyLoc.X) ^ 2 + (bl.Y - S.lastBuddyLoc.Y) ^ 2)
+      if dh < 500 and math.abs(math.abs(dz) - g) < 500 then
+        -- v9.15.7: камера остаётся в копии камеры игры, переход героя её не двигает
+        S.lastBuddyLoc, S.camFrozenAt, jump = bl, nil, 0
+        if not S.copyJumpLogAt or S.frames - S.copyJumpLogAt > 600 then
+          S.copyJumpLogAt = S.frames
+          trail(string.format("вторая камера: Alone перешла в другую копию уровня (%.0f см) — камера остаётся в копии камеры игры", dz))
+        end
+      end
+    end
     if hidden then
       -- герой спрятан игрой (смерть) — камера стоит на его последнем месте
       S.camFrozenAt = S.camFrozenAt or S.frames; frozen = true
@@ -861,7 +898,9 @@ local function updateCam2()
   if not S.nativeCam and S.split and valid(S.pc2) and valid(S.cam2) and S.frames % 60 == 0 then
     pcall(function()
       if S.pc2:GetViewTarget() ~= S.cam2 then S.pc2:SetViewTargetWithBlend(S.cam2, 0, 0, 0, false); trail("вид игрока 2: вернул на свою камеру") end
-      local d = dist(S.cam2:K2_GetActorLocation(), S.buddy:K2_GetActorLocation())
+      local c2, bl = S.cam2:K2_GetActorLocation(), S.buddy:K2_GetActorLocation()
+      if S.overlayOn then bl = S.toCopyOf(bl, c2) end   -- камера может быть в другой копии нарочно
+      local d = dist(c2, bl)
       if d > 3000 then S.camSnap = true; S.roomSm = nil; RC.cur = nil; RC.pickAt = 0; trail(string.format("вторая камера далеко от героя (%.0f см) — переставил", d)) end
     end)
   end
@@ -934,7 +973,7 @@ S.sharedAspect = 16 / 9
 S.viewFrac = function(hero)
   local cm = S.pc1.PlayerCameraManager
   local cl, cr, fov = cm:GetCameraLocation(), cm:GetCameraRotation(), cm:GetFOVAngle()
-  local t = hero:K2_GetActorLocation()
+  local t = S.camCopyLoc(hero)
   local yaw, pitch = math.rad(cr.Yaw), math.rad(cr.Pitch)
   local fx, fy, fz = math.cos(pitch) * math.cos(yaw), math.cos(pitch) * math.sin(yaw), math.sin(pitch)
   local rx, ry = -math.sin(yaw), math.cos(yaw)                                  -- вправо
@@ -959,7 +998,7 @@ local function buddyScreenPos(hero)
     if S.split then
       if S.layoutLR() then W = W / 2 else H = H / 2 end
     end
-    local loc = hero:K2_GetActorLocation()
+    local loc = S.camCopyLoc(hero)
     local out = {}
     local onScr = S.pc1:ProjectWorldLocationToScreen({ X = loc.X, Y = loc.Y, Z = loc.Z }, out, true)
     local x = out.X or (out[1] and out[1].X)
@@ -1027,8 +1066,231 @@ S.inCutscene = function()
   return S.cutsceneUntil ~= nil and S.frames < S.cutsceneUntil
 end
 
+-- v9.15.5: ДВЕ ВЕРСИИ УРОВНЯ ОДНА ПОВЕРХ ДРУГОЙ. В одном месте игры уровень
+-- существует в двух копиях, разнесённых по высоте на ~200 м, и игра
+-- показывает их наложенными в одном кадре: камера стоит в одной копии, а
+-- герои ходят и перескакивают между копиями. Для мода герои оказывались в
+-- 200 м от камеры и друг от друга — проверка «виден ли напарник» давала
+-- мусор, экран делился, когда герои рядом. Поэтому, пока идёт наложение,
+-- всё, что мод считает по положению героев (виден ли в кадре, рядом ли, в
+-- какой комнате), считаем так, будто герой стоит в той же копии, что и
+-- камера (для кадра) или первый герой (для «рядом» и комнат). Расстояние
+-- между копиями берём из самой игры: из прыжка героя при переходе между
+-- копиями или из разницы высот героев, стоящих рядом по плану.
+S.copy = { gap = nil }
+S.copyTick = function()
+  local big = CFG.layer_overlay_gap or 10000
+  pcall(function()
+    local a, b = S.p1:K2_GetActorLocation(), S.buddy:K2_GetActorLocation()
+    -- прыжок героя по высоте больше 100 м за кадр — переход между копиями
+    for i, z in ipairs({ a.Z, b.Z }) do
+      local prev = S.copy["z" .. i]
+      if prev and math.abs(z - prev) > big then
+        local g = math.abs(z - prev)
+        if not S.copy.gap or math.abs(S.copy.gap - g) > 50 then trail(string.format("экран: герой перешёл в другую копию уровня — между копиями %.0f см", g)) end
+        S.copy.gap, S.copy.est = g, false
+      end
+      S.copy["z" .. i] = z
+    end
+    local dh = math.sqrt((a.X - b.X) ^ 2 + (a.Y - b.Y) ^ 2)
+    local dz = math.abs(a.Z - b.Z)
+    if dh < 3000 and dz > big and (not S.copy.gap or S.copy.est) then
+      S.copy.gap, S.copy.est = dz, false
+      trail(string.format("экран: герои в разных копиях уровня — между копиями %.0f см", dz))
+    end
+    local cl = S.pc1.PlayerCameraManager:GetCameraLocation()
+    local dCam = dist(cl, a)
+    -- камера в другой копии, а точного расстояния ещё нет — берём разницу
+    -- высот камеры и героя (ошибка — высота камеры над героем, пара метров)
+    if dCam > big and not S.copy.gap then
+      S.copy.gap, S.copy.est = math.abs(cl.Z - a.Z), true
+      trail(string.format("экран: камера в другой копии уровня — между копиями примерно %.0f см", S.copy.gap))
+    end
+    -- камера по высоте в 100+ м от любого из героев — герой в другой копии
+    local on = math.abs(cl.Z - a.Z) > big or math.abs(cl.Z - b.Z) > big or (dh < 3000 and dz > big)
+    if on then S.copy.untilF = S.frames + 600 end
+  end)
+  -- v9.15.7: кукла перешла к другому, экран разделён — первым ставим держащего
+  if S.twoWorlds() and S.split and S.frames % 15 == 7 then
+    -- куклы ни у кого — порядок как обычно, по тому, где стоят герои
+    local hh = S.lightOwner()
+    local want
+    if hh then want = (hh == S.buddy) else want = S.p2Geo or false end
+    if (S.p2First or false) ~= want then
+      S.p2First = want
+      local ok = pcall(S.setPlayerOrder, want)
+      trail(string.format("два мира: %s — первая половина у %s (%s)", hh and ((S.lightHolder() and "кукла у " or "кукла рядом с ") .. heroName(hh)) or "кукла далеко от обоих", want and "второго" or "первого", ok and "ок" or "ошибка"))
+    end
+  end
+  local on = S.copy.untilF ~= nil and S.frames < S.copy.untilF
+  if on ~= (S.overlayOn or false) then
+    S.overlayOn = on
+    trail(on and "экран: наложенные копии уровня — считаю героев в одной копии" or "экран: наложенных копий больше нет")
+    if not on then S.dollHolder = nil end
+    if S.split then
+      pcall(S.applySplitAspect, true)
+      local hh = S.lightOwner()
+      if on and hh and S.p2First ~= (hh == S.buddy) then S.p2First = (hh == S.buddy); pcall(S.setPlayerOrder, S.p2First) end
+    end
+  end
+end
+-- у кого «светлая» вещь (кукла Alone «Delusion» — с ней герой видит светлую
+-- копию). Ищем среди вещей, которые игра числит за героем.
+S.lightHolder = function()
+  if valid(S.dollHolder) and (S.dollHolder == S.p1 or S.dollHolder == S.buddy) then return S.dollHolder end
+  return nil
+end
+-- v9.15.7: «чья» кукла для экрана: у кого в руках, а если лежит — того героя,
+-- кто к ней ближе (по плану, копии не важны): сфера вокруг неё видна в его
+-- половине, и вести себя всё должно так же, как если бы он её держал
+-- точка в копии уровня, где стоит камера (по высоте камеры: если точка дальше
+-- 100 м по высоте — переносим на целое число шагов между копиями)
+S.toCamCopy = function(p, cl)
+  local gap = (S.copy and S.copy.gap) or CFG.copy_gap or 20000
+  local dz = p.Z - cl.Z
+  if math.abs(dz) <= (CFG.layer_overlay_gap or 10000) then return p end
+  local k = math.floor(dz / gap + 0.5)
+  return { X = p.X, Y = p.Y, Z = p.Z - k * gap }
+end
+-- v9.15.7: «два мира» для экрана — не только когда герои в разных копиях
+-- уровня, но и когда рядом (до 60 м) есть кукла со сферой: её ареол движок
+-- рисует, даже если в её круг ещё никто не входил
+S.twoWorlds = function()
+  if S.overlayOn then return true end
+  if S.frames - (S.twAt or -1000) < 30 then return S.twCache end
+  S.twAt = S.frames
+  local on = false
+  pcall(function()
+    local d = S.halo and S.halo.dollActor and S.halo.dollActor() or nil
+    if not valid(d) then return end
+    local dl = d:K2_GetActorLocation()
+    local lim = CFG.doll_world_dist or 6000
+    for _, h in ipairs({ S.p1, S.buddy }) do
+      local l = h:K2_GetActorLocation()
+      if math.sqrt((l.X - dl.X) ^ 2 + (l.Y - dl.Y) ^ 2) < lim then on = true end
+    end
+  end)
+  if on ~= (S.twCache or false) then trail(on and "два мира: рядом кукла со сферой — экран делю с учётом её ареола" or "два мира: куклы рядом больше нет") end
+  S.twCache = on
+  return on
+end
+S.lightOwner = function()
+  local h = S.lightHolder()
+  if h then return h end
+  if not S.twoWorlds() then return nil end
+  if S.frames - (S.ownAt or -1000) < 10 then return S.ownCache end
+  S.ownAt = S.frames
+  local own = nil
+  pcall(function()
+    local doll = S.halo and S.halo.dollActor and S.halo.dollActor() or nil
+    if not valid(doll) then return end
+    local dl = doll:K2_GetActorLocation()
+    local function dxy(hero) local l = hero:K2_GetActorLocation(); return math.sqrt((l.X - dl.X) ^ 2 + (l.Y - dl.Y) ^ 2) end
+    local d1, d2 = dxy(S.p1), dxy(S.buddy)
+    -- v9.15.7: кукла лежит — первой должна быть половина, в КАДРЕ которой
+    -- кукла (движок рисует ареол только в первой половине). Видна только у
+    -- одного — его половина; у обоих — того, кто ближе; ни у кого — порядок
+    -- как обычно (по тому, где стоят герои).
+    local prev = S.ownCache
+    local function seen(cl, cr, fov)
+      local p = S.toCamCopy(dl, cl)
+      local x, y = S.camFrac(cl, cr, fov, p)
+      S.ownDbg = (S.ownDbg or "") .. (x and string.format(" (%.2f, %.2f)", x, y) or " (позади)")
+      return x ~= nil and math.abs(x) <= 1.1 and math.abs(y) <= 1.1
+    end
+    local v1, v2 = false, false
+    S.ownDbg = ""
+    pcall(function() local cm = S.pc1.PlayerCameraManager; v1 = seen(cm:GetCameraLocation(), cm:GetCameraRotation(), cm:GetFOVAngle()) end)
+    pcall(function() if S.split and valid(S.cam2) then v2 = seen(S.cam2:K2_GetActorLocation(), S.cam2:K2_GetActorRotation(), S.cam2.CameraComponent.FieldOfView) end end)
+    if v1 and not v2 then own = S.p1; S.ownWhy = "в кадре первого"; return end
+    if v2 and not v1 then own = S.buddy; S.ownWhy = "в кадре второго"; return end
+    if not v1 and not v2 then own = nil; S.ownWhy = "ни в чьём кадре"; return end
+    S.ownWhy = "ближе"
+    own = (d2 < d1) and S.buddy or S.p1
+    local hyst = CFG.doll_owner_hysteresis or 300
+    if prev == S.p1 and own == S.buddy and d1 - d2 < hyst then own = S.p1 end
+    if prev == S.buddy and own == S.p1 and d2 - d1 < hyst then own = S.buddy end
+  end)
+  if own ~= S.ownCache then
+    pcall(function() trail(string.format("два мира: кукла лежит — её ареол в половине %s (%s; в кадрах первого/второго:%s)", own and heroName(own) or "ничьей", S.ownWhy or "?", S.ownDbg or "")) end)
+  end
+  if not own and S.split and S.frames - (S.ownDbgAt or -10000) > 300 then
+    S.ownDbgAt = S.frames
+    trail("два мира: кукла лежит, ни в чьём кадре —" .. (S.ownDbg or "") .. (S.halo and valid(S.halo.doll) and "" or " (куклу не нашёл)"))
+  end
+  S.ownCache = own
+  return own
+end
+S.dollNear = function(h, r)
+  local pat = CFG.light_item or "Delusion"
+  local hl = h:K2_GetActorLocation()
+  for _, a in ipairs(FindAllOf("KosmosCarriable") or {}) do
+    local ok, yes = pcall(function() return valid(a) and clsName(a):find(pat, 1, true) and dist(a:K2_GetActorLocation(), hl) < r end)
+    if ok and yes then return a end
+  end
+  return nil
+end
+S.dollEvent = function(h, name)
+  if name:find("Pickup") then
+    if S.dollNear(h, 250) and S.dollHolder ~= h then
+      S.dollHolder = h
+      trail("кукла: взял " .. heroName(h))
+    end
+  elseif name:find("Putdown") or name:find("Throw") or name:find("Drop") then
+    if S.dollHolder == h then
+      S.dollHolder = nil
+      trail("кукла: " .. heroName(h) .. " положил(а)")
+    end
+  end
+end
+-- положение p, перенесённое в копию уровня, где находится точка ref
+S.toCopyOf = function(p, ref)
+  local g = S.copy.gap
+  if not (S.overlayOn and g and g > 0) then return p end
+  local k = math.floor((ref.Z - p.Z) / g + 0.5)
+  if k == 0 then return p end
+  return { X = p.X, Y = p.Y, Z = p.Z + k * g }
+end
+-- в какой комнате герой: в наложенных копиях зоны комнат есть только в одной
+-- копии — если в копии героя комнаты нет, ищем на том же месте в другой копии
+-- (раньше герой в «пустой» копии был «без комнаты», и разные комнаты не
+-- замечались: первый ушёл в другую комнату — экран не делился)
+S.pickRoomAnyCopy = function(p)
+  local r = pickRoomCam(p)
+  local g = S.overlayOn and S.copy.gap
+  if r or not g then return r end
+  return pickRoomCam({ X = p.X, Y = p.Y, Z = p.Z + g }) or pickRoomCam({ X = p.X, Y = p.Y, Z = p.Z - g })
+end
+-- где Alone для проверок «рядом» и «в какой комнате» — в копии Low
+S.buddyLoc = function()
+  local b = S.buddy:K2_GetActorLocation()
+  if not S.overlayOn then return b end
+  return S.toCopyOf(b, S.p1:K2_GetActorLocation())
+end
+-- где герой для проверки «виден в кадре» — в копии камеры игрока 1
+S.camCopyLoc = function(hero)
+  local h = hero:K2_GetActorLocation()
+  if not S.overlayOn then return h end
+  return S.toCopyOf(h, S.pc1.PlayerCameraManager:GetCameraLocation())
+end
+-- v9.15.7: ДАЛЕКО ОТ КАМЕРЫ. Камера игры следит за героем игрока 1: когда
+-- он убегает, второй выходит из кадра, и экран делится. А когда далеко
+-- убегает второй, он остаётся «в кадре», но крошечный — двери и мелочи,
+-- которые видно только вблизи, ему не разглядеть. Сравниваем, во сколько раз
+-- второй дальше от камеры, чем первый.
+S.farRatio = function()
+  local r, d2 = 1, 0
+  pcall(function()
+    local cl = S.pc1.PlayerCameraManager:GetCameraLocation()
+    local d1 = dist(cl, S.camCopyLoc(S.p1))
+    d2 = dist(cl, S.camCopyLoc(S.buddy))
+    r = d2 / math.max(d1, 100)
+  end)
+  return r, d2
+end
 local function wantSplit()
   if S.inCutscene() then return false end
+  if CFG.layer_overlay ~= false then S.copyTick() end
   local mode = CFG.split
   if mode == "always" or S.splitAlways() then return true end
   if mode == "never" then return false end
@@ -1036,8 +1298,8 @@ local function wantSplit()
     -- в какой «комнате» (зоне камеры игры) каждый герой
     if S.frames % 10 == 0 then
       pcall(function()
-        S.roomP1 = pickRoomCam(S.p1:K2_GetActorLocation())
-        S.roomP2 = pickRoomCam(S.buddy:K2_GetActorLocation())
+        S.roomP1 = S.pickRoomAnyCopy(S.p1:K2_GetActorLocation())
+        S.roomP2 = S.pickRoomAnyCopy(S.buddy:K2_GetActorLocation())
       end)
     end
     local diffRooms = valid(S.roomP1) and valid(S.roomP2) and S.roomP1 ~= S.roomP2
@@ -1070,7 +1332,7 @@ local function wantSplit()
       -- или когда они просто стоят рядом (тогда комнаты не важны)
       local close, dh, dz = false, 99999, 0
       pcall(function()
-        local a, b = S.p1:K2_GetActorLocation(), S.buddy:K2_GetActorLocation()
+        local a, b = S.p1:K2_GetActorLocation(), S.buddyLoc()
         dh = math.sqrt((a.X - b.X) ^ 2 + (a.Y - b.Y) ^ 2); dz = math.abs(a.Z - b.Z)
         close = dh < (CFG.merge_distance or 450) and dz < 200
       end)
@@ -1088,7 +1350,9 @@ local function wantSplit()
       end
       VIS.cutLogged = false
       -- в разных комнатах экран всегда разделён, как бы близко герои ни стояли
+      local farR, farD = S.farRatio()
       if diffRooms or (VIS.sameFor or 0) < 20 then VIS.shownFor = 0
+      elseif farR > (CFG.merge_far_ratio or 1.4) and farD > (CFG.split_far_min or 1500) then VIS.shownFor = 0
       elseif not p1In then VIS.shownFor = 0
       elseif close then VIS.shownFor = VIS.shownFor + 2
       elseif insideBox(q, 0.125) then VIS.shownFor = VIS.shownFor + 1
@@ -1110,7 +1374,7 @@ local function wantSplit()
       -- обоих уже не видно, а экран не делился
       local close = false
       pcall(function()
-        local a, b = S.p1:K2_GetActorLocation(), S.buddy:K2_GetActorLocation()
+        local a, b = S.p1:K2_GetActorLocation(), S.buddyLoc()
         close = math.sqrt((a.X - b.X) ^ 2 + (a.Y - b.Y) ^ 2) < 250 and math.abs(a.Z - b.Z) < 60
       end)
       if close and not (p and p.inFront) and not (p1 and p1.inFront) then
@@ -1124,6 +1388,14 @@ local function wantSplit()
       -- счёт не обнуляется, когда герой на миг заходит обратно в рамку:
       -- у края он то входит, то выходит, и раньше счёт так и не набирался
       local seen = p and p.inFront and p.x > 0.06 and p.x < 0.94 and p.y > 0.12 and p.y < 0.96
+      local farR, farD = S.farRatio()
+      if seen and farR > (CFG.split_far_ratio or 1.8) and farD > (CFG.split_far_min or 1500) then
+        seen = false
+        if not VIS.farAt or S.frames - VIS.farAt > 300 then
+          VIS.farAt = S.frames
+          trail(string.format("экран: второй далеко от камеры (в %.1f раза дальше первого, %.0f см) — делю", farR, farD))
+        end
+      end
       if seen and not p1Out then VIS.hiddenFor = math.max(0, VIS.hiddenFor - 3) else VIS.hiddenFor = VIS.hiddenFor + 1 end
       -- делим, если напарник ушёл из кадра или в другую комнату
       -- если и сам игрок 1 выпал из кадра — делим быстрее
@@ -1195,13 +1467,43 @@ S.decideSplitSides = function()
   if CFG.split_layout_force == "left_right" or CFG.split_layout_force == "top_bottom" then return end
   pcall(function()
     local vs = StaticFindObject("/Script/UMG.Default__WidgetLayoutLibrary"):GetViewportSize(S.pc1)
-    local function sp(h) local out = {}; local on = S.pc1:ProjectWorldLocationToScreen(h:K2_GetActorLocation(), out, true); return out.X, out.Y end
+    local function sp(h) local out = {}; local on = S.pc1:ProjectWorldLocationToScreen(S.camCopyLoc(h), out, true); return out.X, out.Y end
     local ax, ay = sp(S.p1); local bx, by = sp(S.buddy)
     if not (ax and ay and bx and by) then return end
     local dx, dy = bx - ax, by - ay          -- в пикселях: сравнимо по обеим осям
+    -- v9.15.7: убегание ВГЛУБЬ кадра на экране почти не видно (вдали всё
+    -- сжимается), и раньше выходило «слева/справа», хотя герой убежал «вверх».
+    -- Сравниваем в мире, в плоскости камеры: вбок (вдоль «вправо» камеры)
+    -- против «вглубь + вверх».
+    pcall(function()
+      local cm = S.pc1.PlayerCameraManager
+      local yaw = math.rad(cm:GetCameraRotation().Yaw)
+      local a, b = S.camCopyLoc(S.p1), S.camCopyLoc(S.buddy)
+      local wx, wy, wz = b.X - a.X, b.Y - a.Y, b.Z - a.Z
+      local side = wx * (-math.sin(yaw)) + wy * math.cos(yaw)       -- вправо
+      local depth = wx * math.cos(yaw) + wy * math.sin(yaw)          -- от камеры
+      local up = math.sqrt(depth * depth + wz * wz) * ((depth + wz) >= 0 and 1 or -1)
+      if math.abs(up) > math.abs(side) * 1.2 then
+        -- на экране «вверх» — отрицательный dy
+        dx, dy = side, -up
+        S.splitWhy = string.format("в мире: вбок %.0f, вглубь/вверх %.0f", side, up)
+      else
+        S.splitWhy = nil
+      end
+    end)
     S.splitLR = math.abs(dx) >= math.abs(dy)
     local forced = S.sidesForced(); if forced ~= nil then S.splitLR = forced end
     S.p2First = S.splitLR and (dx < 0) or (not S.splitLR and dy < 0)
+    -- v9.15.5: в наложенных копиях игрок 1 всегда первый по порядку: если
+    -- первым стоит игрок 2, игра отдаёт ему камеру и видимость героев.
+    -- v9.15.7: светлое пятно движок рисует только в первой половине экрана —
+    -- первым ставим того, у кого кукла
+    S.p2Geo = S.p2First
+    if S.twoWorlds() then
+      local hh = S.lightOwner()
+      if hh then S.p2First = (hh == S.buddy) end
+    end
+    if S.splitWhy then trail("экран: решаю по положению в мире (" .. S.splitWhy .. ")") end
     trail(string.format("экран: второй %s первого (dx=%.0f, dy=%.0f) — делю %s, второй %s",
       S.splitLR and (dx < 0 and "левее" or "правее") or (dy < 0 and "выше" or "ниже"), dx, dy,
       S.splitLR and "слева/справа" or "сверху/снизу", S.p2First and (S.splitLR and "слева" or "сверху") or (S.splitLR and "справа" or "снизу")))
@@ -1482,7 +1784,7 @@ S.EN = {
   ["Всегда горизонтально"] = "Always horizontal", ["Всегда вертикально"] = "Always vertical",
   ["Делить экран с расстояния"] = "Split at distance", ["Делить экран с"] = "Split at",
   ["Кнопки игрока 2  >"] = "Player 2 buttons  >", ["Кнопки игрока 2"] = "Player 2 buttons",
-  ["Сбросить настройки"] = "Reset settings", ["Закрыть  (F9)"] = "Close  (F9)",
+  ["Сбросить настройки"] = "Reset settings", ["Метка записана"] = "Marker saved", ["Закрыть  (F9)"] = "Close  (F9)",
   ["Назад"] = "Back", ["<  Назад"] = "<  Back",
   ["КНОПКИ ИГРОКА 2 — геймпад"] = "PLAYER 2 BUTTONS — gamepad", ["КЛАВИШИ ИГРОКА 2 — клавиатура"] = "PLAYER 2 KEYS — keyboard",
   ["Ходьба"] = "Move", ["левый стик"] = "left stick",
@@ -2005,6 +2307,7 @@ local function takeBuddy()
 end
 local function releaseBuddy()
   pcall(function() S.bowRestore() end)
+  pcall(function() S.twcRelease() end)
   if S.boost then S.boostEnd("кооператив выключен") end
   if not S.real then return end
   S.real = false
@@ -2160,6 +2463,7 @@ suspendCoop = function(reason)
       log("убран лишний игрок (контроллер %d)", id)
     end
   end
+  pcall(function() S.twcRelease() end)
   S.coop, S.split, S.resumeCoop, S.cmd, S.throwCheck, S.detect, S.drag, S.cbox = false, false, true, nil, nil, nil, nil, nil
   -- камеры комнат прошлого уровня после загрузки «мёртвые» — забываем их
   RC.list, RC.listAt, RC.cur, RC.pickAt, RC.errLogged = {}, -100000, nil, 0, false
@@ -3755,7 +4059,7 @@ S.ensurePOI = function()
     if not S.poiErrLogged then S.poiErrLogged = true; trail("общий экран: не удалось добавить точку интереса — " .. tostring(c)) end
     return nil
   end
-  S.poi, S.poiOwner = c, S.buddy
+  S.poi, S.poiOwner, S.poiDz, S.poiAbs = c, S.buddy, nil, nil
   pcall(function()
     trail(string.format("общий экран: точка интереса на втором игроке (по умолчанию: вес %.2f, радиусы %.0f/%.0f, скорость %.2f, зум %.2f, менеджер камеры %s)",
       c.mWeight, c.mInnerRadius, c.mOuterRadius, c.mLerpSpeedWeight, c.mCameraZoom, clsName(c.mCameraManager)))
@@ -3768,7 +4072,266 @@ S.ensurePOI = function()
   pcall(function() if not valid(c.mCameraManager) then c.mCameraManager = S.pc1.PlayerCameraManager end end)
   return c
 end
+-- v9.15.5: КАК ИГРА НАКЛАДЫВАЕТ ВТОРОЙ МИР. Кукла светит сферой, внутри
+-- которой виден второй мир. Его снимает съёмка «двух миров» (мост светильника)
+-- — это копия камеры игры, сдвинутая на 200 м во второй мир, с тем же
+-- обзором; картинка одна на всех (2WorldsRenderTarget) и вклеивается в кадр
+-- внутри сферы. Камера игры у нас — камера игрока 1, поэтому сфера на
+-- половине второго показывала второй мир «с точки зрения» первого. Когда
+-- кукла у Alone и экран разделён, ставим эту съёмку туда же, где камера
+-- игрока 2 (с тем же сдвигом), — и сфера на его половине показывает то, что
+-- надо. Иначе съёмку не трогаем — её ведёт игра.
+S.twc = { list = {}, at = -10000 }
+-- поставить съёмку туда, куда смотрит камера игрока 2 (во втором мире)
+-- v9.15.7: на разделённом экране съёмкой второго мира управляет мод:
+-- она повторяет камеру ПЕРВОЙ половины (в неё движок вклеивает пятно) —
+-- место, поворот и обзор по ширине этой половины (половина уже целого
+-- экрана, и картинка второго мира должна совпасть с ней, а не с целым).
+S.twcSource = function()
+  if S.p2First and S.playersSwapped and valid(S.cam2) then
+    local f = 60
+    pcall(function() f = S.cam2.CameraComponent.FieldOfView end)
+    return S.cam2:K2_GetActorLocation(), S.cam2:K2_GetActorRotation(), f, "камера 2"
+  end
+  local cm = S.pc1.PlayerCameraManager
+  return cm:GetCameraLocation(), cm:GetCameraRotation(), cm:GetFOVAngle(), "камера игры"
+end
+S.halfAspect = function()
+  if not S.twc.vs or S.frames - (S.twc.vsAt or -1000) > 120 then
+    pcall(function() S.twc.vs = StaticFindObject("/Script/UMG.Default__WidgetLayoutLibrary"):GetViewportSize(S.pc1) end)
+    S.twc.vsAt = S.frames
+  end
+  local vs = S.twc.vs
+  if not (vs and vs.X and vs.Y and vs.X > 0 and vs.Y > 0) then return 16 / 9, true end
+  local lr = S.layoutLR()
+  if lr then return (vs.X / 2) / vs.Y, true end
+  return vs.X / (vs.Y / 2), false
+end
+-- пропорции кадра камер игры (те, что держались до разделения)
+S.frameAspect = function()
+  if S.twc.R and S.frames - (S.twc.RAt or -10000) < 600 then return S.twc.R end
+  local counts, best, bn = {}, nil, 0
+  local function add(v) if type(v) == "number" and v > 0.5 and v < 4 then local k = string.format("%.3f", v); counts[k] = (counts[k] or 0) + 1; if counts[k] > bn then best, bn = v, counts[k] end end end
+  pcall(function() for _, cam in ipairs((S.aspectSaved and S.aspectSaved.cams) or {}) do pcall(function() add(cam.AspectRatio) end) end end)
+  if not best then pcall(function() add(S.pc1.PlayerCameraManager.DefaultAspectRatio) end) end
+  local R = best or 16 / 9
+  if not S.twc.R or math.abs(S.twc.R - R) > 0.001 then
+    local list = {}
+    for k, n in pairs(counts) do list[#list + 1] = k .. "×" .. n end
+    trail(string.format("два мира: пропорции кадра игры %.3f (камеры: %s)", R, #list > 0 and table.concat(list, ", ") or "нет"))
+  end
+  S.twc.R, S.twc.RAt = R, S.frames
+  return R
+end
+S.twcApply = function()
+  local c = S.twc.cap
+  if not (S.twc.on and valid(c)) then return end
+  local l, r, f = S.twcSource()
+  local o = S.twc.off
+  c:K2_SetWorldLocationAndRotation({ X = l.X + o.X, Y = l.Y + o.Y, Z = l.Z + o.Z }, r, false, {}, true)
+  -- v9.15.7: КАК ДВИЖОК ВКЛЕИВАЕТ КАРТИНКУ. Три опыта (обычная съёмка —
+  -- «лупа по ширине»; под всю половину по правилам движка — «экран в экране»
+  -- примерно вдвое меньше; под прямоугольник 16:9 — «сплющено и чуть
+  -- вытянуто») сходятся в одном: картинка ложится на ВСЮ половину, а сама
+  -- половина сверху/снизу держит не 60° по высоте, а высоту кадра 16:9 при
+  -- этом обзоре (тангенс × 9/16) и дорисовывает по ширине. Слева/справа —
+  -- держит ширину. Съёмка должна видеть ровно это.
+  local R = S.frameAspect()
+  local a, lr = S.halfAspect()
+  local t = math.tan(math.rad(f / 2))
+  local rV, rH
+  if lr then rH = t; rV = t / a else rV = t / R; rH = rV * a end
+  pcall(function()
+    local m = c.CustomProjectionMatrix
+    m.XPlane.X, m.XPlane.Y, m.XPlane.Z, m.XPlane.W = 1 / rH, 0, 0, 0
+    m.YPlane.X, m.YPlane.Y, m.YPlane.Z, m.YPlane.W = 0, 1 / rV, 0, 0
+    m.ZPlane.X, m.ZPlane.Y, m.ZPlane.Z, m.ZPlane.W = 0, 0, 0, 1
+    m.WPlane.X, m.WPlane.Y, m.WPlane.Z, m.WPlane.W = 0, 0, CFG.capture_near or 10, 0
+    if not c.bUseCustomProjectionMatrix then c.bUseCustomProjectionMatrix = true end
+  end)
+  pcall(function() c.FOVAngle = 2 * math.deg(math.atan(rH)) end)
+  local key = string.format("%.1f/%.1f", rH, rV)
+  if S.twc.projKey ~= key then
+    S.twc.projKey = key
+    trail(string.format("два мира: кадр игры %.3f, половина %.2f (%s) — съёмка видит %.1f° по ширине и %.1f° по высоте",
+      R, a, lr and "слева/справа" or "сверху/снизу", 2 * math.deg(math.atan(rH)), 2 * math.deg(math.atan(rV))))
+  end
+end
+S.twcRelease = function()
+  if not S.twc or not S.twc.on then return end
+  S.twc.on = false
+  pcall(function() if valid(S.twc.cap) then S.twc.cap.bUseCustomProjectionMatrix = false end end)
+  pcall(function() if valid(S.twc.cap) then S.twc.cap:SetComponentTickEnabled(true) end end)
+end
+-- после тика моста светильника (блюпринт возвращает съёмку к камере игры)
+-- ставим съёмку ещё раз — наша установка последняя
+S.twcHookBridge = function(c)
+  if S.twc.hooked then return end
+  local br = nil
+  pcall(function() br = c:GetOwner() end)
+  if not valid(br) then return end
+  S.twc.hooked = true
+  pcall(function()
+    br:GetClass():ForEachFunction(function(f)
+      pcall(function()
+        if f:GetFName():ToString() ~= "ReceiveTick" then return end
+        RegisterHook((f:GetFullName():gsub("^Function ", "")), function() pcall(S.twcApply) end)
+      end)
+    end)
+  end)
+end
+-- v9.15.7: АРЕОЛ ДЕРЖАЩЕГО КУКЛУ. Сферу второго мира мост светильника каждый
+-- кадр передаёт съёмке (SetTwoWorldSphereInfo: номер, место, радиус), но
+-- гасит её (радиус 0), когда кукла дальше ~19 м от героя игрока 1 — сама
+-- кукла при этом включена и раскрыта. В одиночной игре напарник с куклой всегда
+-- рядом; у нас второй — живой игрок. Поэтому, пока кукла у второго и его
+-- половина экрана первая (в неё движок вклеивает пятно), после того как мост
+-- передал сферы, возвращаем погашенной сфере куклы её радиус и место —
+-- с тем же сдвигом от куклы, с каким их передавала сама игра.
+S.halo = {}
+S.halo.dollActor = function()
+  local d = S.halo.doll
+  if valid(d) and S.frames - (S.halo.dollAt or -1000) < 300 then return d end
+  d = nil
+  local bl = S.buddy:K2_GetActorLocation()
+  local bd = nil
+  for _, a in ipairs(FindAllOf("KosmosCarriable") or {}) do
+    pcall(function()
+      if clsName(a):find(CFG.light_item or "Delusion", 1, true) then
+        local al = a:K2_GetActorLocation()
+        local dd = math.sqrt((al.X - bl.X) ^ 2 + (al.Y - bl.Y) ^ 2)
+        if not bd or dd < bd then d, bd = a, dd end
+      end
+    end)
+  end
+  S.halo.doll, S.halo.dollAt = d, S.frames
+  return d
+end
+S.halo.active = function()
+  return S.twoWorlds() and S.split and S.p2First and S.playersSwapped and CFG.two_worlds_p2 ~= false
+    and valid(S.buddy) and S.lightOwner() == S.buddy
+end
+S.halo.hook = function()
+  if S.halo.hooked then return end
+  S.halo.hooked = true
+  local ok, e = pcall(function()
+    RegisterHook("/Script/KosmosRendering.TwoWorldsCaptureComponent:SetTwoWorldSphereInfo", function() end, function(ctx, idx, loc, rad)
+      if S.halo.self then return nil end
+      pcall(function()
+        local l, i, r = loc:get(), idx:get(), rad:get()
+        if r and r > 0 and S.halo.active() then
+          -- сфера куклы, которую передала сама игра: запоминаем номер, сдвиг от куклы и радиус
+          local d = S.halo.dollActor()
+          if valid(d) then
+            local dl = d:K2_GetActorLocation()
+            local off = { x = l.X - dl.X, y = l.Y - dl.Y, z = l.Z - dl.Z }
+            if math.sqrt(off.x * off.x + off.y * off.y) < 300 then
+              S.halo.good = { i = i, off = off, r = r }
+              S.halo.cap = ctx:get()
+              S.halo.sentF = S.frames
+            end
+          end
+        end
+      end)
+      return nil
+    end)
+  end)
+  trail("ареол: слежу за сферами съёмки (" .. (ok and "ок" or tostring(e)) .. ")")
+  -- после того как мост передал все сферы — возвращаем погашенную сферу куклы
+  pcall(function()
+    local br = FindFirstOf("BP_IlluminatorBridge_C")
+    if not valid(br) then return end
+    br:GetClass():ForEachFunction(function(f)
+      pcall(function()
+        if f:GetFName():ToString() ~= "SetAllTwoWorldSpheres" then return end
+        local full = f:GetFullName():gsub("^Function ", "")
+        RegisterHook(full, function() pcall(S.halo.restore) end)
+        trail("ареол: подправляю сферы после моста")
+      end)
+    end)
+  end)
+end
+S.halo.restore = function()
+  local g = S.halo.good
+  if not g or not S.halo.active() then return end
+  if S.halo.sentF == S.frames then return end           -- в этом кадре игра сама передала сферу
+  local cap, d = S.halo.cap, S.halo.dollActor()
+  if not (valid(cap) and valid(d)) then return end
+  local dl = d:K2_GetActorLocation()
+  S.halo.self = true
+  local ok = pcall(function() cap:SetTwoWorldSphereInfo(g.i, { X = dl.X + g.off.x, Y = dl.Y + g.off.y, Z = dl.Z + g.off.z }, g.r) end)
+  S.halo.self = false
+  if not S.halo.fixLogged then
+    S.halo.fixLogged = true
+    trail(string.format("ареол: мост погасил сферу куклы (второй далеко от первого) — вернул её (%s)", ok and "ок" or "ошибка"))
+  end
+end
+S.halo.tick = function()
+  if not (S.split and S.lightOwner() == S.buddy) then return end
+  S.halo.hook()
+end
+S.twcTick = function()
+  -- v9.15.7: только в двух мирах (кукла рядом) и на разделённом экране;
+  -- в settings.lua two_worlds_p2 = false выключает
+  if not S.twoWorlds() or CFG.two_worlds_p2 == false then
+    if S.twc.on then
+      S.twc.on = false
+      pcall(function() if valid(S.twc.cap) then S.twc.cap.bUseCustomProjectionMatrix = false end end)
+      pcall(function() if valid(S.twc.cap) then S.twc.cap:SetComponentTickEnabled(true) end end)
+      trail("два мира: съёмка снова у камеры игры")
+    end
+    return
+  end
+  if S.frames - S.twc.at > 300 then S.twc.list = FindAllOf("TwoWorldsCaptureComponent") or {}; S.twc.at = S.frames end
+  pcall(S.halo.tick)
+  local cm = S.pc1.PlayerCameraManager
+  local cl, fov1 = cm:GetCameraLocation(), cm:GetFOVAngle()
+  -- съёмка второго мира должна стоять у камеры той половины, что первая
+  -- (в неё движок вклеивает пятно): первая — второго игрока → у камеры 2
+  local want = S.split
+  if not want then
+    if S.twc.on then
+      S.twc.on = false
+      pcall(function() if valid(S.twc.cap) then S.twc.cap.bUseCustomProjectionMatrix = false end end)
+      pcall(function() if valid(S.twc.cap) then S.twc.cap:SetComponentTickEnabled(true) end end)
+      trail("два мира: съёмка снова у камеры игры")
+    end
+    return
+  end
+  -- активная съёмка: та, что повторяет камеру игры (тот же обзор), и её сдвиг
+  if not S.twc.on then
+    local best, bd
+    for _, c in ipairs(S.twc.list) do
+      pcall(function()
+        if not valid(c) then return end
+        local l = c:K2_GetComponentLocation()
+        local d = math.abs((c.FOVAngle or 0) - fov1) * 100 + math.abs(math.sqrt((l.X - cl.X) ^ 2 + (l.Y - cl.Y) ^ 2))
+        if not bd or d < bd then best, bd = c, d end
+      end)
+    end
+    if not valid(best) then return end
+    local l = best:K2_GetComponentLocation()
+    S.twc.offs = S.twc.offs or {}
+    local key = best:GetFullName()
+    if not S.twc.offs[key] then S.twc.offs[key] = { X = l.X - cl.X, Y = l.Y - cl.Y, Z = l.Z - cl.Z } end
+    S.twc.cap, S.twc.off = best, S.twc.offs[key]
+    S.twc.on = true
+    -- игра каждый кадр возвращает съёмку к своей камере (её тик), поэтому на
+    -- время берём съёмку себе: тик выключаем, место и обзор задаём сами
+    pcall(function() best:SetComponentTickEnabled(false) end)
+    S.twc.manual = false
+    pcall(function() S.twc.manual = best.bCaptureEveryFrame == false end)
+    S.twcHookBridge(best)
+    trail(string.format("два мира: экран разделён — съёмку второго мира веду за камерой первой половины (сдвиг %.0f %.0f %.0f)", S.twc.off.X, S.twc.off.Y, S.twc.off.Z))
+  end
+  local c = S.twc.cap
+  if not valid(c) then S.twc.on = false; return end
+  S.twcApply()
+  if S.twc.manual then pcall(function() c:CaptureScene() end) end
+end
 S.midCamTick = function()
+  local okt, et = pcall(S.twcTick)
+  if not okt and (not S.twcErrAt or S.frames - S.twcErrAt > 600) then S.twcErrAt = S.frames; trail("два мира: ошибка " .. tostring(et)) end
   if S.frames % 6 == 3 then S.dyingNow = S.anyDying() end
   if CFG.shared_center == false then return end
   local c = S.ensurePOI()
@@ -3776,6 +4339,37 @@ S.midCamTick = function()
   -- на общем экране точка «тянет» камеру к середине; на разделённом — выключена
   local w = (not S.split and not S.cam1Frozen) and (CFG.shared_poi_weight or 0.5) or 0
   pcall(function() if math.abs((c.mWeight or 0) - w) > 0.001 then c.mWeight = w end end)
+  -- v9.15.5: в наложенных копиях точку интереса ставим на Alone в той копии,
+  -- где Low (камера игры считает кадр от героя игрока 1). Раньше в этом месте
+  -- точка была выключена (тянула камеру на 100 м) — и общий экран следил
+  -- только за первым игроком.
+  -- v9.15.7: точка интереса — не на герое, а в мире, на месте Alone в копии
+  -- КАМЕРЫ игры. Прикреплённая к Alone, она в момент его перехода между
+  -- копиями уровня (вход в круг куклы) на кадр-другой прыгала на 200 м вместе
+  -- с ним и утягивала камеру вверх — даже если мод ещё не понял, что копии
+  -- наложены. Поэтому считаем по высоте камеры сразу: если Alone дальше 100 м
+  -- по высоте от камеры — переносим точку на целое число шагов между копиями.
+  pcall(function()
+    if not S.poiAbs then
+      S.poiAbs = true
+      c:SetAbsolute(true, false, false)
+    end
+    local b = S.buddy:K2_GetActorLocation()
+    local cz = S.pc1.PlayerCameraManager:GetCameraLocation().Z
+    local gap = (S.copy and S.copy.gap) or CFG.copy_gap or 20000
+    local dz = b.Z - cz
+    local z = b.Z
+    if math.abs(dz) > (CFG.layer_overlay_gap or 10000) then
+      local k = math.floor(dz / gap + 0.5)
+      z = b.Z - k * gap
+    end
+    c:K2_SetWorldLocation({ X = b.X, Y = b.Y, Z = z }, false, {}, false)
+    local moved = math.abs(z - b.Z) > 1
+    if moved ~= (S.poiShifted or false) then
+      S.poiShifted = moved
+      trail(moved and string.format("общий экран: Alone в другой копии — точка интереса в копии камеры игры (сдвиг %.0f см)", z - b.Z) or "общий экран: точка интереса снова на месте Alone")
+    end
+  end)
   if not S.split and S.frames % 240 == 120 then
     pcall(function()
       local function sp(h)
@@ -4689,6 +5283,13 @@ local function applyInputReal()
   if not S.boost and not S.hadBoost and S.frames % 3600 == 300 then pcall(function() S.animBase = { [1] = S.animSnapOf(S.p1), [2] = S.animSnapOf(S.buddy) } end) end
   if S.respawnAt then local okR, eR = pcall(S.afterRespawnCam); if not okR then S.respawnAt = nil; trail("камера 1 после возрождения: ошибка " .. tostring(eR)) end end
   if not S.boost and S.frames % 600 == 300 then pcall(function() trail("герои обычно: " .. S.killDiag()); trail("роли обычно: " .. S.roleDiag()); pcall(function() local gm = UEHelpers.GetGameModeBase(); trail(string.format("режим игры: одиночная=%s, игроков=%s", tostring(gm:IsSinglePlayerGame()), tostring(gm.NumPlayers))) end) end) end
+  -- v9.15.5: метку (как F8) может поставить и игрок 2 — кнопкой «Выбор»
+  -- (View / Share) своего геймпада. Квадрат / X занят бегом.
+  if CFG.device == "gamepad" then
+    local mb = isDown(p2Source(), CFG.mark_button or "Gamepad_Special_Left")
+    if mb and not S.prevMarkBtn then S.markReq = true; pcall(toast, "Метка записана") end
+    S.prevMarkBtn = mb
+  end
   if S.markReq then
     S.markReq = false
     pcall(function()
@@ -5573,6 +6174,9 @@ local function Tick()
           local key = cls
           if name ~= S.animCur[key] then
             S.animCur[key] = name
+            -- v9.15.5: у кого кукла — по подъёму и опусканию (в руках игра её
+            -- не прикрепляет к герою, а «своей» числит и после того, как положили)
+            if name and (h == S.p1 or h == S.buddy) then pcall(S.dollEvent, h, name) end
             if name and not S.animSeen[cls .. name] then
               S.animSeen[cls .. name] = true
               local full = ""; pcall(function() full = m:GetFullName() end)
@@ -5716,4 +6320,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.15.6 загружен. F9 — меню кооператива")
+log("v9.15.7 загружен. F9 — меню кооператива")
