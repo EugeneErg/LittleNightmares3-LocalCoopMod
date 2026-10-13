@@ -1,4 +1,4 @@
--- LN3Couch v9.15.5 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.15.6 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -181,8 +181,43 @@ local function findPC(id)
     end
   end
 end
-local function isHero(p) if not valid(p) then return false end local c = p:GetClass():GetFName():ToString(); return c == "BP_Low_C" or c == "BP_Alone_C" end
-local function heroName(p) if not valid(p) then return "?" end local c = p:GetClass():GetFName():ToString(); return c == "BP_Low_C" and "Low" or "Alone" end
+-- v9.15.6: ГЕРОИ — ПО РОДУ, А НЕ ПО ИМЕНИ. Раньше героями считались только
+-- классы BP_Low_C и BP_Alone_C, и в дополнениях (Dime в The Backstage, свои
+-- Low и Alone в The Shores) мод героев не находил и кооператив не включался.
+-- Все герои игры происходят от BP_KosmosPlayer_C — по нему и узнаём.
+S.heroCls = {}
+local function isHero(p)
+  if not valid(p) then return false end
+  local ok, cls = pcall(function() return p:GetClass() end)
+  if not ok or not valid(cls) then return false end
+  local key = cls:GetFName():ToString()
+  local r = S.heroCls[key]
+  if r == nil then
+    r = false
+    local c, depth = cls, 0
+    while valid(c) and depth < 12 do
+      local n = c:GetFName():ToString()
+      if n == "BP_KosmosPlayer_C" then r = true; break end
+      local oks, sup = pcall(function() return c:GetSuperStruct() end)
+      c = oks and sup or nil; depth = depth + 1
+    end
+    S.heroCls[key] = r
+  end
+  return r
+end
+local function heroName(p)
+  if not valid(p) then return "?" end
+  local c = p:GetClass():GetFName():ToString()
+  if c:find("Low") then return "Low" elseif c:find("Alone") then return "Alone" elseif c:find("Dime") then return "Dime" end
+  return (c:gsub("^BP_", ""):gsub("_C$", ""))
+end
+-- все герои в мире (живые и «лишние» копии)
+S.heroList = function()
+  local out = {}
+  local list = FindAllOf("BP_KosmosPlayer_C") or FindAllOf("KosmosBaseCharacter") or {}
+  for _, h in ipairs(list) do if isHero(h) then out[#out + 1] = h end end
+  return out
+end
 local function findBuddy(p1pawn)
   for _, ai in ipairs(FindAllOf("KosmosAIController") or {}) do
     if ai:IsValid() then
@@ -1353,13 +1388,17 @@ local function dumpHeroes(why)
       out[#out + 1] = string.format("  контроллер %s id=%s пешка=%s", cname(pc), okc and tostring(cid) or "-", okp and cname(pawn) or "?")
     end
   end
-  for _, cls in ipairs({ "BP_Low_C", "BP_Alone_C" }) do
-    for _, h in ipairs(FindAllOf(cls) or {}) do
-      if valid(h) then
-        local okc, c = pcall(function() return h.Controller end)
-        out[#out + 1] = string.format("  герой %s %s управляет=%s", cls, h:GetFName():ToString(), okc and cname(c) or "?")
-      end
+  for _, h in ipairs(S.heroList()) do
+    if valid(h) then
+      local okc, c = pcall(function() return h.Controller end)
+      out[#out + 1] = string.format("  герой %s %s управляет=%s", cname(h), h:GetFName():ToString(), okc and cname(c) or "?")
     end
+  end
+  -- для дополнений: если героев не нашлось — кто вообще есть из персонажей
+  if #S.heroList() == 0 then
+    local seen = {}
+    for _, ch in ipairs(FindAllOf("KosmosBaseCharacter") or {}) do pcall(function() seen[#seen + 1] = cname(ch) end) end
+    out[#out + 1] = "  персонажи: " .. (#seen > 0 and table.concat(seen, ", ") or "нет")
   end
   log("%s", table.concat(out, "\n"))
 end
@@ -1369,12 +1408,10 @@ local function acquire()
   local ai, buddy = findBuddy(S.p1)
   if not buddy then
     -- запасной путь: второй герой, которым управляет любой ИИ-контроллер
-    for _, cls in ipairs({ "BP_Low_C", "BP_Alone_C" }) do
-      for _, h in ipairs(FindAllOf(cls) or {}) do
-        if valid(h) and h ~= S.p1 then
-          local okc, c = pcall(function() return h.Controller end)
-          if okc and valid(c) and c:IsA(StaticFindObject("/Script/AIModule.AIController")) then ai, buddy = c, h end
-        end
+    for _, h in ipairs(S.heroList()) do
+      if valid(h) and h ~= S.p1 then
+        local okc, c = pcall(function() return h.Controller end)
+        if okc and valid(c) and c:IsA(StaticFindObject("/Script/AIModule.AIController")) then ai, buddy = c, h end
       end
     end
   end
@@ -2133,7 +2170,29 @@ if CFG.coop_enabled then S.resumeCoop = true end
 local function resumeTick()
   if not S.resumeCoop or S.coop or S.frames % 60 ~= 0 then return end
   local pc = findPC1()
-  if not (valid(pc) and isHero(pc.Pawn)) or not findBuddy(pc.Pawn) then S.resumeReady = 0; return end
+  if not (valid(pc) and isHero(pc.Pawn)) or not findBuddy(pc.Pawn) then
+    S.resumeReady = 0
+    -- для разбора (дополнения): в уровне, а героев мод не узнал — кто там есть
+    S.resumeMiss = (S.resumeMiss or 0) + 1
+    if S.resumeMiss % 10 == 0 and S.resumeMissLogged ~= S.worldName then
+      pcall(function()
+        local pawn = valid(pc) and pc.Pawn or nil
+        local chars = {}
+        for _, ch in ipairs(FindAllOf("KosmosBaseCharacter") or {}) do
+          pcall(function()
+            local ctl = ch.Controller
+            chars[#chars + 1] = string.format("%s (герой=%s, управляет %s)", cname(ch), tostring(isHero(ch)), valid(ctl) and cname(ctl) or "никто")
+          end)
+        end
+        if #chars > 0 then
+          S.resumeMissLogged = S.worldName
+          trail(string.format("кооператив ждёт героев: у игрока 1 %s (герой=%s); персонажи: %s", cname(pawn), tostring(isHero(pawn)), table.concat(chars, ", ")))
+        end
+      end)
+    end
+    return
+  end
+  S.resumeMiss = 0
   -- можно задать задержку (resume_delay_s, в секундах); по умолчанию сразу,
   -- чтобы напарником не успел побегать ИИ
   S.resumeReady = (S.resumeReady or 0) + 1
@@ -5505,20 +5564,19 @@ local function Tick()
     pcall(function()
       S.animSeen = S.animSeen or {}
       S.animCur = S.animCur or {}
-      for _, cls in ipairs({ "BP_Low_C", "BP_Alone_C" }) do
-        for _, h in ipairs(FindAllOf(cls) or {}) do
-          local okc, c = pcall(function() return h.Controller end)
-          if valid(h) and okc and valid(c) then
-            local okm, m = pcall(function() return h:GetCurrentMontage() end)
-            local name = (okm and valid(m)) and m:GetFName():ToString() or nil
-            local key = cls
-            if name ~= S.animCur[key] then
-              S.animCur[key] = name
-              if name and not S.animSeen[cls .. name] then
-                S.animSeen[cls .. name] = true
-                local full = ""; pcall(function() full = m:GetFullName() end)
-                trail(string.format("анимация: %s (%s) → %s", cls == "BP_Low_C" and "Low" or "Alone", clsName(c), full))
-              end
+      for _, h in ipairs(S.heroList()) do
+        local cls = cname(h)
+        local okc, c = pcall(function() return h.Controller end)
+        if valid(h) and okc and valid(c) then
+          local okm, m = pcall(function() return h:GetCurrentMontage() end)
+          local name = (okm and valid(m)) and m:GetFName():ToString() or nil
+          local key = cls
+          if name ~= S.animCur[key] then
+            S.animCur[key] = name
+            if name and not S.animSeen[cls .. name] then
+              S.animSeen[cls .. name] = true
+              local full = ""; pcall(function() full = m:GetFullName() end)
+              trail(string.format("анимация: %s (%s) → %s", heroName(h), clsName(c), full))
             end
           end
         end
@@ -5658,4 +5716,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.15.5 загружен. F9 — меню кооператива")
+log("v9.15.6 загружен. F9 — меню кооператива")
