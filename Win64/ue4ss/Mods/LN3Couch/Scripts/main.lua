@@ -1536,6 +1536,14 @@ S.applySplitAspect = function(on)
     for _, c in ipairs(FindAllOf("CameraComponent") or {}) do
       pcall(function()
         if valid(c) and c.bConstrainAspectRatio then
+          -- пропорции кадра запоминаем числом сразу: камеры выгруженных
+          -- комнат потом удаляются, и читать их позже нельзя (вылет)
+          local ar = c.AspectRatio
+          if type(ar) == "number" and ar > 0.5 and ar < 4 then
+            A.ar = A.ar or {}
+            local k = string.format("%.3f", ar)
+            A.ar[k] = (A.ar[k] or 0) + 1
+          end
           A.cams[#A.cams + 1] = c; c.bConstrainAspectRatio = false
         end
       end)
@@ -4111,9 +4119,13 @@ end
 S.frameAspect = function()
   if S.twc.R and S.frames - (S.twc.RAt or -10000) < 600 then return S.twc.R end
   local counts, best, bn = {}, nil, 0
-  local function add(v) if type(v) == "number" and v > 0.5 and v < 4 then local k = string.format("%.3f", v); counts[k] = (counts[k] or 0) + 1; if counts[k] > bn then best, bn = v, counts[k] end end end
-  pcall(function() for _, cam in ipairs((S.aspectSaved and S.aspectSaved.cams) or {}) do pcall(function() add(cam.AspectRatio) end) end end)
-  if not best then pcall(function() add(S.pc1.PlayerCameraManager.DefaultAspectRatio) end) end
+  -- только числа, записанные при отключении пропорций у камер (S.applySplitAspect):
+  -- сами камеры к этому времени могут быть уже удалены
+  for k, n in pairs((S.aspectSaved and S.aspectSaved.ar) or {}) do
+    counts[k] = n
+    if n > bn then best, bn = tonumber(k), n end
+  end
+  if not best then pcall(function() local v = S.pc1.PlayerCameraManager.DefaultAspectRatio; if type(v) == "number" and v > 0.5 and v < 4 then best = v end end) end
   local R = best or 16 / 9
   if not S.twc.R or math.abs(S.twc.R - R) > 0.001 then
     local list = {}
@@ -4188,7 +4200,7 @@ end
 -- половина экрана первая (в неё движок вклеивает пятно), после того как мост
 -- передал сферы, возвращаем погашенной сфере куклы её радиус и место —
 -- с тем же сдвигом от куклы, с каким их передавала сама игра.
-S.halo = {}
+S.halo = { sent = {}, on = false }
 S.halo.dollActor = function()
   local d = S.halo.doll
   if valid(d) and S.frames - (S.halo.dollAt or -1000) < 300 then return d end
@@ -4215,23 +4227,18 @@ S.halo.hook = function()
   if S.halo.hooked then return end
   S.halo.hooked = true
   local ok, e = pcall(function()
+    -- внутри перехвата только записываем числа — никаких вызовов игры
+    -- (поиск куклы, её место): движок в этот момент посреди передачи сфер.
+    -- Разбираем записанное после моста, в S.halo.restore.
     RegisterHook("/Script/KosmosRendering.TwoWorldsCaptureComponent:SetTwoWorldSphereInfo", function() end, function(ctx, idx, loc, rad)
-      if S.halo.self then return nil end
+      if S.halo.self or not S.halo.on then return nil end
       pcall(function()
-        local l, i, r = loc:get(), idx:get(), rad:get()
-        if r and r > 0 and S.halo.active() then
-          -- сфера куклы, которую передала сама игра: запоминаем номер, сдвиг от куклы и радиус
-          local d = S.halo.dollActor()
-          if valid(d) then
-            local dl = d:K2_GetActorLocation()
-            local off = { x = l.X - dl.X, y = l.Y - dl.Y, z = l.Z - dl.Z }
-            if math.sqrt(off.x * off.x + off.y * off.y) < 300 then
-              S.halo.good = { i = i, off = off, r = r }
-              S.halo.cap = ctx:get()
-              S.halo.sentF = S.frames
-            end
-          end
-        end
+        local r = rad:get()
+        if not (r and r > 0) then return end
+        local l = loc:get()
+        local sent = S.halo.sent
+        sent[#sent + 1] = { i = idx:get(), x = l.X, y = l.Y, z = l.Z, r = r }
+        if not S.halo.cap then S.halo.cap = ctx:get() end
       end)
       return nil
     end)
@@ -4252,12 +4259,20 @@ S.halo.hook = function()
   end)
 end
 S.halo.restore = function()
-  local g = S.halo.good
-  if not g or not S.halo.active() then return end
-  if S.halo.sentF == S.frames then return end           -- в этом кадре игра сама передала сферу
-  local cap, d = S.halo.cap, S.halo.dollActor()
-  if not (valid(cap) and valid(d)) then return end
-  local dl = d:K2_GetActorLocation()
+  local sent = S.halo.sent
+  S.halo.sent = {}
+  local dl = S.halo.dollL
+  if not (S.halo.on and dl) then return end
+  -- сфера куклы, которую передала сама игра: запоминаем номер, сдвиг от куклы и радиус
+  for _, h in ipairs(sent) do
+    local off = { x = h.x - dl.X, y = h.y - dl.Y, z = h.z - dl.Z }
+    if math.sqrt(off.x * off.x + off.y * off.y) < 300 then
+      S.halo.good = { i = h.i, off = off, r = h.r }
+      return                                             -- игра сама передала сферу
+    end
+  end
+  local g, cap = S.halo.good, S.halo.cap
+  if not (g and valid(cap)) then return end
   S.halo.self = true
   local ok = pcall(function() cap:SetTwoWorldSphereInfo(g.i, { X = dl.X + g.off.x, Y = dl.Y + g.off.y, Z = dl.Z + g.off.z }, g.r) end)
   S.halo.self = false
@@ -4266,14 +4281,24 @@ S.halo.restore = function()
     trail(string.format("ареол: мост погасил сферу куклы (второй далеко от первого) — вернул её (%s)", ok and "ок" or "ошибка"))
   end
 end
+-- раз в кадр, вне перехватов: включено ли возвращение сферы и где кукла
 S.halo.tick = function()
+  S.halo.on, S.halo.dollL = false, nil
+  if S.halo.cap and not valid(S.halo.cap) then S.halo.cap = nil end
   if not (S.split and S.lightOwner() == S.buddy) then return end
   S.halo.hook()
+  if not S.halo.active() then return end
+  local d = S.halo.dollActor()
+  if not valid(d) then return end
+  local l = d:K2_GetActorLocation()
+  S.halo.dollL = { X = l.X, Y = l.Y, Z = l.Z }
+  S.halo.on = true
 end
 S.twcTick = function()
   -- v9.15.7: только в двух мирах (кукла рядом) и на разделённом экране;
   -- в settings.lua two_worlds_p2 = false выключает
   if not S.twoWorlds() or CFG.two_worlds_p2 == false then
+    S.halo.on, S.halo.dollL = false, nil
     if S.twc.on then
       S.twc.on = false
       pcall(function() if valid(S.twc.cap) then S.twc.cap.bUseCustomProjectionMatrix = false end end)
