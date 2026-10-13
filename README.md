@@ -103,7 +103,8 @@ After:   Player 1 ─ PlayerController 1 ─ hero 1
 - On the shared screen, Player 2's hero is added to the game camera as a point of interest, so the camera's own logic frames both players.
 - Player 2's split-screen camera reproduces the game's room cameras: the hero's position in the room maps to the camera's position, with the designer-set angles and limits.
 - For boosts the mod briefly hands the giving hero to the game's AI, which knows how to perform the boost, and gives it back as soon as the boost ends.
-- Enemies decide whether to grab by checking the player only. The mod runs the same check for the second player, so they grab whoever they are chasing.
+- In single-player, every enemy asks the game for "player 0" to check whether someone is in grab range, and that is always Player 1's hero. While an enemy chases Player 2, the mod answers that question with Player 2's hero, so the game itself grabs whoever is being chased.
+- Bow targets count only if they are on screen, and for the game the screen is Player 1's camera. While Player 2 aims on a split screen, targets visible in Player 2's half skip that check, and the game picks the target as usual.
 
 ## Compatibility
 
