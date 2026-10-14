@@ -2084,6 +2084,7 @@ end
 local function setCoop(on)
   if on == S.coop then return end
   if on then
+    pcall(function() S.checkApi() end)
     applyGamepadRouting()
     S.frames = 0
     -- отметки шагов после загрузки считаются в кадрах — счёт кадров начался заново
@@ -2320,11 +2321,11 @@ end
 local function tryPickupOrPutdown()
   local held = heldItem()
   if held then
-    return runCmd("положить", function() return carryCmds():PlaypalCarriable_Putdown(S.buddy, false, { X = 0, Y = 0, Z = 0 }) end)
+    return runCmd("положить", function() return S.cmdCall("Carriable", "PlaypalCarriable_Putdown", S.buddy, false, { X = 0, Y = 0, Z = 0 }) end)
   end
   local c, d = nearestCarriable()
   if c then
-    return runCmd(string.format("поднять (%.0f см)", d), function() return carryCmds():PlaypalCarriable_Pickup(S.buddy, c) end)
+    return runCmd(string.format("поднять (%.0f см)", d), function() return S.cmdCall("Carriable", "PlaypalCarriable_Pickup", S.buddy, c) end)
   end
   return false
 end
@@ -2386,7 +2387,7 @@ local function tryThrow()
   if not okp then log("бросок: не удалось посчитать направление: %s", tostring(stand)); return end
   local sm, tm = placeMarker("throwStand", stand), placeMarker("throwTarget", target)
   if not (valid(sm) and valid(tm)) then log("бросок: метки не создались"); return end
-  runCmd("бросить", function() return carryCmds():PlaypalCarriable_Throw(S.buddy, sm, tm) end)
+  runCmd("бросить", function() return S.cmdCall("Carriable", "PlaypalCarriable_Throw", S.buddy, sm, tm) end)
   S.throwCheck = { at = S.frames + 75, target = target }
 end
 local function throwCheckTick()
@@ -2459,7 +2460,7 @@ local function tryWeapon()
   if not valid(tm) then tm = placeMarker("weapTarget", target) end
   if not (valid(sm) and valid(tm)) then return false end
   return runCmd(isLow and "выстрелить из лука" or "ударить ключом", function()
-    return weaponCmds():PlaypalWeaponAttack(S.buddy, sm, stand, tm, target, false, 1, 60)
+    return S.cmdCall("WeaponTools", "PlaypalWeaponAttack", S.buddy, sm, stand, tm, target, false, 1, 60)
   end)
 end
 
@@ -2544,49 +2545,194 @@ S.heroEnumValue = function(hero, p)
   if found then return found.value, found.from end
   return nil
 end
-S.playpalSig = {}
-S.playpalCall = function(fnName, ...)
-  local given = table.pack(...)
-  local sig = S.playpalSig[fnName]
-  if not sig then
-    sig = {}
-    pcall(function()
-      StaticFindObject("/Script/Kosmos.KosmosPlaypalCommandsInteractions:" .. fnName):ForEachProperty(function(pr)
-        local n = pr:GetFName():ToString()
-        if n == "ReturnValue" then return end
-        local cn = ""; pcall(function() cn = pr:GetClass():GetFName():ToString() end)
-        local kind = "other"
-        if cn:find("Object") or cn:find("Class") or cn:find("Interface") then kind = "object"
-        elseif cn == "BoolProperty" then kind = "bool"
-        elseif cn:find("Int") or cn == "FloatProperty" or cn == "DoubleProperty" or cn == "ByteProperty" or cn == "EnumProperty" then kind = "number"
-        elseif cn == "StructProperty" then kind = "struct"
-        elseif cn == "NameProperty" then kind = "name" end
-        local pcls, enum = nil, nil
-        if kind == "object" then pcall(function() pcls = pr:GetPropertyClass() end) end
-        if cn == "ByteProperty" or cn == "EnumProperty" then
-          local okE, e = pcall(function() return pr:GetEnum() end)
-          if okE and e then enum = e end
-        end
-        sig[#sig + 1] = { name = n, cls = cn, kind = kind, pcls = pcls, enum = enum,
-          heroType = (cn == "ByteProperty" or cn == "EnumProperty") and n:find("CharacterType") ~= nil }
-      end)
+-- Общий переходник для команд напарнику (подсадка, ящики, переноска, оружие):
+-- если у функции игры столько же параметров, сколько передаём мы (версия
+-- игры, под которую сделан мод), вызываем как есть. Иначе раскладываем наши
+-- значения по параметрам функции этой версии игры.
+S.CMD_CLASSES = {
+  Interactions = "/Script/Kosmos.KosmosPlaypalCommandsInteractions",
+  Carriable    = "/Script/Kosmos.KosmosPlaypalCommandsCarriable",
+  WeaponTools  = "/Script/Kosmos.KosmosPlaypalCommandsWeaponTools",
+}
+S.cmdObj = function(group)
+  if group == "Interactions" then return interactCmds() end
+  if group == "Carriable" then return carryCmds() end
+  if group == "WeaponTools" then return weaponCmds() end
+end
+S.propKind = function(cn)
+  if cn:find("Object") or cn:find("Class") or cn:find("Interface") then return "object"
+  elseif cn == "BoolProperty" then return "bool"
+  elseif cn:find("Int") or cn == "FloatProperty" or cn == "DoubleProperty" or cn == "ByteProperty" or cn == "EnumProperty" then return "number"
+  elseif cn == "StructProperty" then return "struct"
+  elseif cn == "NameProperty" then return "name" end
+  return "other"
+end
+-- перечисление параметра: у самого параметра, а если не отдаёт — по имени
+S.propEnum = function(pr, n, cn)
+  if not (cn == "ByteProperty" or cn == "EnumProperty") then return nil end
+  local okE, e = pcall(function() return pr:GetEnum() end)
+  if okE and e then
+    local okv, v = pcall(function() return e:IsValid() end)
+    if not okv or v then return e end
+  end
+  local base = n:gsub("^In", ""):gsub("^New", "")
+  for _, cand in ipairs({ "E" .. base, "EKosmos" .. base, "E" .. base .. "s" }) do
+    local okf, f = pcall(function() return StaticFindObject("/Script/Kosmos." .. cand) end)
+    if okf and valid(f) then return f end
+  end
+  return nil
+end
+S.readSig = function(classPath, fnName)
+  local sig, ret = {}, nil
+  pcall(function()
+    StaticFindObject(classPath .. ":" .. fnName):ForEachProperty(function(pr)
+      local n = pr:GetFName():ToString()
+      local cn = ""; pcall(function() cn = pr:GetClass():GetFName():ToString() end)
+      if n == "ReturnValue" then ret = cn; return end
+      local kind = S.propKind(cn)
+      local pcls = nil
+      if kind == "object" then pcall(function() pcls = pr:GetPropertyClass() end) end
+      local enum = S.propEnum(pr, n, cn)
+      sig[#sig + 1] = { name = n, cls = cn, kind = kind, pcls = pcls, enum = enum,
+        heroType = (cn == "ByteProperty" or cn == "EnumProperty") and n:find("CharacterType") ~= nil }
     end)
-    S.playpalSig[fnName] = sig
-    if #sig ~= given.n then
-      local d = {}
-      for _, p in ipairs(sig) do d[#d + 1] = p.name .. ":" .. p.cls end
-      trail(string.format("команды напарнику: у %s другие параметры (%d вместо %d): %s — подбираю по видам", fnName, #sig, given.n, table.concat(d, ", ")))
+  end)
+  return sig, ret
+end
+S.sigText = function(sig)
+  local d = {}
+  for _, p in ipairs(sig) do d[#d + 1] = p.name .. ":" .. p.cls end
+  return table.concat(d, ", ")
+end
+S.enumText = function(e)
+  local parts = {}
+  for _, en in ipairs(S.enumEntries(e)) do parts[#parts + 1] = en.name .. "=" .. tostring(en.value) end
+  return #parts > 0 and table.concat(parts, ", ") or "значения не прочитались"
+end
+-- Снимок «API» команд напарнику этой версии игры — один раз за запуск, в
+-- trail.txt. По нему видно, чем версия игры игрока отличается от нашей.
+S.apiFingerprint = function()
+  if S.apiDone then return end
+  S.apiDone = true
+  local enums = {}
+  for group, path in pairs(S.CMD_CLASSES) do
+    local names = {}
+    pcall(function()
+      StaticFindObject(path):ForEachFunction(function(f) names[#names + 1] = f:GetFName():ToString() end)
+    end)
+    table.sort(names)
+    trail(string.format("API %s: %d функций", group, #names))
+    for _, fn in ipairs(names) do
+      local sig, ret = S.readSig(path, fn)
+      trail(string.format("API   %s(%s)%s", fn, S.sigText(sig), ret and (" -> " .. ret) or ""))
       for _, p in ipairs(sig) do
-        if p.enum then
-          local parts = {}
-          for _, en in ipairs(S.enumEntries(p.enum)) do parts[#parts + 1] = en.name .. "=" .. tostring(en.value) end
-          trail(string.format("команды напарнику: %s.%s — перечисление %s: %s", fnName, p.name,
-            S.enumKey(p.enum) or "?", #parts > 0 and table.concat(parts, ", ") or "значения не прочитались"))
+        local k = p.enum and S.enumKey(p.enum)
+        if k and not enums[k] then enums[k] = true; trail(string.format("API   перечисление %s: %s", k, S.enumText(p.enum))) end
+      end
+    end
+  end
+end
+-- Функции игры «найти героя по типу» (Get…/Find…(тип) -> объект). Нужны,
+-- чтобы ПЕРЕД командой проверить, что игра по этому типу найдёт именно нашего
+-- героя, — и подобрать тип, если по имени угадали неверно.
+S.typeLookups = function(enum)
+  local key = S.enumKey(enum)
+  S.lookupCache = S.lookupCache or {}
+  if not key then return {} end
+  if S.lookupCache[key] then return S.lookupCache[key] end
+  local out = {}
+  local owners = {
+    { path = "/Script/Kosmos.KosmosBlueprintFunctionLibrary", obj = function() return StaticFindObject("/Script/Kosmos.Default__KosmosBlueprintFunctionLibrary") end },
+    { path = "/Script/Kosmos.KosmosCharactersSubsystem", obj = function() return FindFirstOf("KosmosCharactersSubsystem") end },
+  }
+  for group, path in pairs(S.CMD_CLASSES) do
+    owners[#owners + 1] = { path = path, obj = function() return S.cmdObj(group) end }
+  end
+  for _, o in ipairs(owners) do
+    local names = {}
+    pcall(function() StaticFindObject(o.path):ForEachFunction(function(f) names[#names + 1] = f:GetFName():ToString() end) end)
+    for _, fn in ipairs(names) do
+      if fn:find("^Get") or fn:find("^Find") then
+        local sig, ret = S.readSig(o.path, fn)
+        if ret and S.propKind(ret) == "object" then
+          local enumAt, others, ok = nil, 0, true
+          for i, p in ipairs(sig) do
+            if p.enum and S.enumKey(p.enum) == key then
+              if enumAt then ok = false else enumAt = i end
+            elseif p.kind == "object" and p.name:find("Context") then others = others + 1
+            else ok = false end
+          end
+          if ok and enumAt then out[#out + 1] = { owner = o, fn = fn, sig = sig, enumAt = enumAt } end
         end
       end
     end
   end
-  if #sig == 0 or #sig == given.n then return interactCmds()[fnName](interactCmds(), ...) end
+  S.lookupCache[key] = out
+  local d = {}
+  for _, l in ipairs(out) do d[#d + 1] = l.fn end
+  trail(string.format("команды напарнику: поиск героя по типу %s — %s", key, #d > 0 and table.concat(d, ", ") or "функций игры не нашёл"))
+  return out
+end
+-- кого игра найдёт по типу value (через первую подходящую функцию), или nil
+S.lookupHero = function(l, value, ctx)
+  local obj = l.owner.obj()
+  if not valid(obj) then return nil, false end
+  local args = {}
+  for i, p in ipairs(l.sig) do args[i] = (i == l.enumAt) and value or ctx end
+  local ok, r = pcall(function() return obj[l.fn](obj, table.unpack(args, 1, #l.sig)) end)
+  if not ok then return nil, false end
+  return valid(r) and r or nil, true
+end
+-- тип персонажа для героя: по имени/свойству, затем сверка с игрой.
+-- Функция поиска считается «про героев», если хоть для одного значения
+-- возвращает героя. Если такая есть, верим ей: берём значение, по которому
+-- она находит нашего героя; не находит ни по какому — команду не даём
+-- (команда игры тоже не найдёт героя и уронит игру).
+S.resolveHeroType = function(hero, p)
+  local hv, from = S.heroEnumValue(hero, p)
+  local entries = S.enumEntries(p.enum)
+  for _, l in ipairs(S.typeLookups(p.enum)) do
+    local map, relevant, match = {}, false, nil
+    for _, en in ipairs(entries) do
+      local who, called = S.lookupHero(l, en.value, hero)
+      if called then
+        local h = valid(who) and isHero(who)
+        if h then relevant = true end
+        map[#map + 1] = en.name .. "→" .. (h and heroName(who) or (valid(who) and clsName(who) or "пусто"))
+        if who == hero and (match == nil or en.value == hv) then match = en end
+      end
+    end
+    if relevant then
+      local mapText = table.concat(map, ", ")
+      if S.lookupLogged ~= mapText then S.lookupLogged = mapText; trail(string.format("команды напарнику: %s находит: %s", l.fn, mapText)) end
+      if match then
+        if match.value == hv then return hv, (from or "?") .. ", игра подтвердила через " .. l.fn end
+        return match.value, "по " .. l.fn .. " (" .. match.name .. ")" .. (hv ~= nil and (", по имени было " .. tostring(hv)) or "")
+      end
+      trail(string.format("команды напарнику: %s не находит %s ни по одному типу", l.fn, heroName(hero)))
+      return nil
+    end
+  end
+  return hv, from
+end
+S.cmdSig = {}
+S.cmdCall = function(group, fnName, ...)
+  local cmds = S.cmdObj(group)
+  local given = table.pack(...)
+  local key = group .. ":" .. fnName
+  local sig = S.cmdSig[key]
+  if not sig then
+    sig = S.readSig(S.CMD_CLASSES[group], fnName)
+    S.cmdSig[key] = sig
+    if #sig ~= 0 and #sig ~= given.n then
+      trail(string.format("команды напарнику: у %s другие параметры (%d вместо %d): %s — подбираю по видам", fnName, #sig, given.n, S.sigText(sig)))
+      for _, p in ipairs(sig) do
+        if p.enum then trail(string.format("команды напарнику: %s.%s — перечисление %s: %s", fnName, p.name, S.enumKey(p.enum) or "?", S.enumText(p.enum))) end
+      end
+      pcall(S.apiFingerprint)
+    end
+  end
+  if #sig == 0 or #sig == given.n then return cmds[fnName](cmds, ...) end
   local function kindOf(v)
     local t = type(v)
     if t == "number" then return "number" elseif t == "boolean" then return "bool" elseif t == "table" then return "struct" end
@@ -2596,20 +2742,22 @@ S.playpalCall = function(fnName, ...)
     end
     return "other"
   end
-  local used, args = {}, {}
+  local used, args, desc, missing = {}, {}, {}, {}
   for i, p in ipairs(sig) do
     local v, found = nil, false
     -- тип персонажа — у героя, которому даём команду; наши числа на него не тратим
     if p.heroType then
       local hero = isHero(given[1]) and given[1] or S.buddy
-      local hv, from = S.heroEnumValue(hero, p)
+      local hv, from = nil, nil
+      if p.enum then hv, from = S.resolveHeroType(hero, p) end
       if hv == nil then
         trail(string.format("команды напарнику: %s — не узнал %s для %s, команду не даю", fnName, p.name, heroName(hero)))
         return nil
       end
-      if not (S.typeLogged or {})[fnName] then
-        S.typeLogged = S.typeLogged or {}; S.typeLogged[fnName] = true
-        trail(string.format("команды напарнику: %s.%s = %s для %s (%s)", fnName, p.name, tostring(hv), heroName(hero), from))
+      S.typeLogged = S.typeLogged or {}
+      if S.typeLogged[key] ~= hv then
+        S.typeLogged[key] = hv
+        trail(string.format("команды напарнику: %s.%s = %s для %s (%s)", fnName, p.name, tostring(hv), heroName(hero), from or "?"))
       end
       v, found = hv, true
     end
@@ -2629,16 +2777,47 @@ S.playpalCall = function(fnName, ...)
         if not used[j] and kindOf(given[j]) == p.kind then v, found = given[j], true; used[j] = true; break end
       end
     end
-    if not found then
-      if p.kind == "object" then v = given[1]                  -- «кто» / контекст мира — герой
-      elseif p.kind == "bool" then v = false
-      elseif p.kind == "number" then v = 0
-      elseif p.kind == "struct" then v = {}
-      elseif p.kind == "name" then v = FName("None") end
-    end
+    -- значения для параметра нет: вызов «наугад» может уронить игру
+    -- (так было с подсадкой), поэтому такую команду не даём, а пишем, чего не хватило
+    if not found then missing[#missing + 1] = p.name .. ":" .. p.cls end
     args[i] = v
+    desc[#desc + 1] = p.name .. "=" .. (kindOf(v) == "object" and clsName(v) or tostring(v))
   end
-  return interactCmds()[fnName](interactCmds(), table.unpack(args, 1, #sig))
+  if #missing > 0 then
+    S.missLogged = S.missLogged or {}
+    if not S.missLogged[key] then
+      S.missLogged[key] = true
+      trail(string.format("команды напарнику: %s — нечем заполнить %s, команду не даю", fnName, table.concat(missing, ", ")))
+    end
+    return nil
+  end
+  S.argsLogged = S.argsLogged or {}
+  if not S.argsLogged[key] then S.argsLogged[key] = true; trail(string.format("команды напарнику: вызываю %s(%s)", fnName, table.concat(desc, ", "))) end
+  return cmds[fnName](cmds, table.unpack(args, 1, #sig))
+end
+S.playpalCall = function(fnName, ...) return S.cmdCall("Interactions", fnName, ...) end
+-- При старте кооператива: сверяем число параметров у всех команд, которые
+-- даёт мод. Отличается хоть одна — пишем в лог весь API этой версии игры.
+S.CMD_EXPECT = {
+  { "Interactions", "PlaypalBoost", 2 }, { "Interactions", "PlaypalFreeDraggable", 5 },
+  { "Interactions", "PlaypalPushPull", 4 }, { "Carriable", "PlaypalCarriable_Putdown", 3 },
+  { "Carriable", "PlaypalCarriable_Pickup", 2 }, { "Carriable", "PlaypalCarriable_Throw", 3 },
+  { "WeaponTools", "PlaypalWeaponAttack", 8 }, { "WeaponTools", "PlaypalWeaponShowHide", 2 },
+}
+S.checkApi = function()
+  if S.apiChecked then return end
+  S.apiChecked = true
+  local diff = {}
+  for _, e in ipairs(S.CMD_EXPECT) do
+    local sig = S.readSig(S.CMD_CLASSES[e[1]], e[2])
+    if #sig == 0 then diff[#diff + 1] = e[2] .. ": нет в игре"
+    elseif #sig ~= e[3] then diff[#diff + 1] = string.format("%s: %d вместо %d", e[2], #sig, e[3]) end
+  end
+  if #diff == 0 then trail("команды напарнику: версия игры совпадает с той, под которую сделан мод")
+  else
+    trail("команды напарнику: ДРУГАЯ ВЕРСИЯ ИГРЫ — " .. table.concat(diff, "; "))
+    pcall(S.apiFingerprint)
+  end
 end
 local function nearestDraggable()
   local best, bestD
@@ -4939,7 +5118,7 @@ local function applyInput()
   local f, r, lx, ly, jump, grab, crouch, sprint, throw, weapon = readP2()
   if weapon and not S.prev.weapon and not heldItem() then
     local want = not S.weaponOut
-    if runCmd(want and "достать оружие" or "убрать оружие", function() return weaponCmds():PlaypalWeaponShowHide(S.buddy, want) end) then
+    if runCmd(want and "достать оружие" or "убрать оружие", function() return S.cmdCall("WeaponTools", "PlaypalWeaponShowHide", S.buddy, want) end) then
       S.weaponOut = want
     end
   end
@@ -4989,7 +5168,7 @@ local function applyInput()
       if not S.pickedAt or S.frames - S.pickedAt > 20 then
         if not S.lastPutdownAt or S.frames - S.lastPutdownAt > 50 then
           S.lastPutdownAt = S.frames
-          runCmd("положить", function() return carryCmds():PlaypalCarriable_Putdown(S.buddy, false, { X = 0, Y = 0, Z = 0 }) end)
+          runCmd("положить", function() return S.cmdCall("Carriable", "PlaypalCarriable_Putdown", S.buddy, false, { X = 0, Y = 0, Z = 0 }) end)
         end
       end
       S.prev.grab, S.prev.jump, S.prev.throw = grab, jump, throw
@@ -5029,7 +5208,7 @@ local function applyInput()
         log("рядом с напарником: %s", #near > 0 and table.concat(near, "; ") or "ничего")
       end
       local c, d = c0, cd0
-      if c and runCmd(string.format("поднять (%.0f см)", d), function() return carryCmds():PlaypalCarriable_Pickup(S.buddy, c) end) then
+      if c and runCmd(string.format("поднять (%.0f см)", d), function() return S.cmdCall("Carriable", "PlaypalCarriable_Pickup", S.buddy, c) end) then
         S.prev.grab = grab; return
       end
     end
