@@ -1,4 +1,4 @@
--- LN3Couch v9.15.6 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.15.8 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -102,7 +102,25 @@ local S = {
   drawSeen = false,
 }
 local TICKS = 0
-local function now() return TICKS / 60 end
+-- v9.15.7: время в секундах — настоящее (по часам игры), а не «кадры / 60»:
+-- мод получает не 60 тактов в секунду, а сколько успевает игра (в тяжёлых
+-- местах около 25–30), и всё, что считалось «секундами» по тактам, шло вдвое
+-- медленнее (подсадка начиналась через 0,8 с вместо 0,4).
+S.nowt = { tick = -1, t = 0, real = nil, base = 0 }
+local function now()
+  if S.nowt.tick == TICKS then return S.nowt.t end
+  local okr, rt = pcall(function() return UEHelpers.GetGameplayStatics():GetRealTimeSeconds(UEHelpers.GetWorld()) end)
+  if okr and type(rt) == "number" and rt > 0 then
+    -- часы игры идут с загрузки уровня — сшиваем, чтобы время только росло
+    if S.nowt.real == nil or rt < S.nowt.real then S.nowt.base = S.nowt.t - rt + (S.nowt.real and 1 / 60 or 0) end
+    S.nowt.real = rt
+    S.nowt.t = S.nowt.base + rt
+  else
+    S.nowt.t = S.nowt.t + math.max(0, TICKS - S.nowt.tick) / 60
+  end
+  S.nowt.tick = TICKS
+  return S.nowt.t
+end
 local suspendCoop -- объявлено заранее, задаётся ниже -- «секунды» по нашему циклу (~60 раз в секунду)
 
 ------------------------------------------------------------------ ввод
@@ -2462,6 +2480,82 @@ local function interactCmds()
   if not valid(CARRY.icmds) then CARRY.icmds = StaticFindObject("/Script/Kosmos.Default__KosmosPlaypalCommandsInteractions") end
   return CARRY.icmds
 end
+-- v9.15.7: КОМАНДЫ НАПАРНИКУ ПРИ ДРУГОЙ ВЕРСИИ ИГРЫ. В обновлённой игре у
+-- команд (подсадка, ящики) появился ещё один параметр, и вызов с прежним
+-- набором падал («UFunction expected 3 parameters, received 2») — подсадка
+-- у таких игроков не работала совсем. Теперь параметры берём у самой
+-- функции игры: наши значения раскладываем по параметрам того же вида (объект,
+-- число, флаг, структура) в прежнем порядке, недостающим даём значение по
+-- умолчанию. Если набор параметров не такой, как мы знаем, пишем его в лог.
+S.playpalSig = {}
+S.playpalCall = function(fnName, ...)
+  local given = table.pack(...)
+  local sig = S.playpalSig[fnName]
+  if not sig then
+    sig = {}
+    pcall(function()
+      StaticFindObject("/Script/Kosmos.KosmosPlaypalCommandsInteractions:" .. fnName):ForEachProperty(function(pr)
+        local n = pr:GetFName():ToString()
+        if n == "ReturnValue" then return end
+        local cn = ""; pcall(function() cn = pr:GetClass():GetFName():ToString() end)
+        local kind = "other"
+        if cn:find("Object") or cn:find("Class") or cn:find("Interface") then kind = "object"
+        elseif cn == "BoolProperty" then kind = "bool"
+        elseif cn:find("Int") or cn == "FloatProperty" or cn == "DoubleProperty" or cn == "ByteProperty" or cn == "EnumProperty" then kind = "number"
+        elseif cn == "StructProperty" then kind = "struct"
+        elseif cn == "NameProperty" then kind = "name" end
+        local pcls = nil
+        if kind == "object" then pcall(function() pcls = pr:GetPropertyClass() end) end
+        sig[#sig + 1] = { name = n, cls = cn, kind = kind, pcls = pcls }
+      end)
+    end)
+    S.playpalSig[fnName] = sig
+    if #sig ~= given.n then
+      local d = {}
+      for _, p in ipairs(sig) do d[#d + 1] = p.name .. ":" .. p.cls end
+      trail(string.format("команды напарнику: у %s другие параметры (%d вместо %d): %s — подбираю по видам", fnName, #sig, given.n, table.concat(d, ", ")))
+    end
+  end
+  if #sig == 0 or #sig == given.n then return interactCmds()[fnName](interactCmds(), ...) end
+  local function kindOf(v)
+    local t = type(v)
+    if t == "number" then return "number" elseif t == "boolean" then return "bool" elseif t == "table" then return "struct" end
+    if t == "userdata" then
+      if pcall(function() return v:GetFullName() end) then return "object" end
+      if pcall(function() return v:ToString() end) then return "name" end
+    end
+    return "other"
+  end
+  local used, args = {}, {}
+  for i, p in ipairs(sig) do
+    local v, found = nil, false
+    -- «контекст мира» — любой объект уровня; наши значения на него не тратим
+    if p.kind == "object" and (p.name:find("WorldContext") or p.name:find("Context")) then v, found = given[1], true end
+    -- объект — тот из наших, что подходит по классу параметра
+    if not found and p.kind == "object" and p.pcls then
+      for j = 1, given.n do
+        if not used[j] and kindOf(given[j]) == "object" then
+          local okIs, is = pcall(function() return given[j]:IsA(p.pcls) end)
+          if okIs and is then v, found = given[j], true; used[j] = true; break end
+        end
+      end
+    end
+    if not found then
+      for j = 1, given.n do
+        if not used[j] and kindOf(given[j]) == p.kind then v, found = given[j], true; used[j] = true; break end
+      end
+    end
+    if not found then
+      if p.kind == "object" then v = given[1]                  -- «кто» / контекст мира — герой
+      elseif p.kind == "bool" then v = false
+      elseif p.kind == "number" then v = 0
+      elseif p.kind == "struct" then v = {}
+      elseif p.kind == "name" then v = FName("None") end
+    end
+    args[i] = v
+  end
+  return interactCmds()[fnName](interactCmds(), table.unpack(args, 1, #sig))
+end
 local function nearestDraggable()
   local best, bestD
   for _, d in ipairs(FindAllOf("KosmosDraggable") or {}) do
@@ -2497,7 +2591,7 @@ local function issueDrag()
   local loc = dragTarget(S.drag.f or 0, S.drag.r or 0); if not loc then return false end
   local m = placeMarker("dragTarget", loc); if not valid(m) then return false end
   local ok, action = try("FreeDraggable", function()
-    return interactCmds():PlaypalFreeDraggable(S.buddy, S.drag.box, m, loc, 40)
+    return S.playpalCall("PlaypalFreeDraggable", S.buddy, S.drag.box, m, loc, 40)
   end)
   if ok and valid(action) then
     try("FreeDraggable Activate", function() action:Activate() end)
@@ -2559,7 +2653,7 @@ end
 local function cboxIssue(target)
   local c = S.cbox
   local ok, action = try("PushPull", function()
-    return interactCmds():PlaypalPushPull(S.buddy, c.box, target, 3)
+    return S.playpalCall("PlaypalPushPull", S.buddy, c.box, target, 3)
   end)
   if ok and valid(action) then
     try("PushPull Activate", function() action:Activate() end)
@@ -3532,9 +3626,9 @@ S.boostStart = function(hero, owner, spot)
     -- камера игрока 1 замирает на месте на время подсадки
     pcall(S.applyCam1Freeze)
   end
-  S.boost = { hero = hero, owner = owner, spot = spot, startFrame = S.frames, prevChar = prevChar }
+  S.boost = { hero = hero, owner = owner, spot = spot, startFrame = S.frames, startT = now(), prevChar = prevChar }
   pcall(S.boostPassThrough, true)
-  local ok, action = try("PlaypalBoost", function() return interactCmds():PlaypalBoost(hero, spot) end)
+  local ok, action = try("PlaypalBoost", function() return S.playpalCall("PlaypalBoost", hero, spot) end)
   if ok and valid(action) then
     try("PlaypalBoost Activate", function() action:Activate() end)
     log("подсадка: %s подсаживает (%s)", heroName(hero), spot:GetFName():ToString())
@@ -3596,9 +3690,9 @@ S.rbEdges = function()
   local r1, r2 = S.grabDown(true), S.grabDown(false)
   local e1, e2 = r1 and not S.prevRB1, r2 and not S.prevRB2
   S.prevRB1, S.prevRB2 = r1, r2
-  -- сколько кадров курок держат (для начала подсадки)
-  S.rbHeld1 = r1 and (S.rbHeld1 or 0) + 1 or 0
-  S.rbHeld2 = r2 and (S.rbHeld2 or 0) + 1 or 0
+  -- с какого момента курок держат (для начала подсадки) — в секундах
+  if r1 then S.rbAt1 = S.rbAt1 or now() else S.rbAt1, S.rbFired1 = nil, nil end
+  if r2 then S.rbAt2 = S.rbAt2 or now() else S.rbAt2, S.rbFired2 = nil, nil end
   return e1, e2
 end
 S.boostTick = function(e1, e2)
@@ -3609,7 +3703,7 @@ S.boostTick = function(e1, e2)
       if valid(m) and m:GetFName():ToString():find("GiveBoost") then
         b.poseAt = S.frames
         local hl, sl = b.hero:K2_GetActorLocation(), b.spot:K2_GetActorLocation()
-        trail(string.format("подсадка: %s встал в позу через %.1f с (до места %.0f см)", heroName(b.hero), (S.frames - b.startFrame) / 60, dist(hl, sl)))
+        trail(string.format("подсадка: %s встал в позу через %.1f с (до места %.0f см)", heroName(b.hero), now() - (b.startT or now()), dist(hl, sl)))
       end
     end)
     if not b.poseAt and (S.frames - b.startFrame) % 60 == 59 then
@@ -3693,9 +3787,10 @@ S.boostInput = function()
   -- короткие нажатия у места подсадки (схватить что-то, в погоне) раньше
   -- то начинали, то сразу отменяли подсадку, и каждый раз героя забирали у
   -- игрока и возвращали — в погоне это роняло игру
-  local HOLD = CFG.boost_hold_frames or 24
-  if S.rbHeld1 == HOLD then S.tryBoost(S.p1, S.pc1, "Low")
-  elseif S.rbHeld2 == HOLD then S.tryBoost(S.buddy, S.pc2, "Alone") end
+  local HOLD = CFG.boost_hold_seconds or 0.4
+  local t = now()
+  if S.rbAt1 and not S.rbFired1 and t - S.rbAt1 >= HOLD then S.rbFired1 = true; S.tryBoost(S.p1, S.pc1, "Low")
+  elseif S.rbAt2 and not S.rbFired2 and t - S.rbAt2 >= HOLD then S.rbFired2 = true; S.tryBoost(S.buddy, S.pc2, "Alone") end
 end
 -- Начать подсадку героем hero. Если у него в руках вещь (фонарик, ключ),
 -- сначала убираем её: при передаче героя ИИ игра обрывает способность
@@ -5716,4 +5811,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.15.6 загружен. F9 — меню кооператива")
+log("v9.15.8 загружен. F9 — меню кооператива")
