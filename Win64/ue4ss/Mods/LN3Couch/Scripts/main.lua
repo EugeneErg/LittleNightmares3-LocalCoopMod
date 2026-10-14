@@ -1,4 +1,4 @@
--- LN3Couch v9.15.8 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.15.9 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -2487,6 +2487,63 @@ end
 -- функции игры: наши значения раскладываем по параметрам того же вида (объект,
 -- число, флаг, структура) в прежнем порядке, недостающим даём значение по
 -- умолчанию. Если набор параметров не такой, как мы знаем, пишем его в лог.
+-- v9.15.9: ТИП ПЕРСОНАЖА В КОМАНДАХ. В новой версии игры подсадка получает не
+-- героя, а «тип персонажа» (CompanionCharacterType, перечисление), и по нему
+-- игра сама ищет героя. Мы подставляли 0 — игра не находила героя и падала.
+-- Теперь тип ищем по имени героя среди значений перечисления (Low, Alone,
+-- Dime…), а если не нашли — в свойстве самого героя того же перечисления
+-- (кроме свойств «про другого»: Companion, Other, Buddy…). Если тип узнать
+-- не удалось, команду НЕ вызываем (лучше без подсадки, чем вылет).
+S.enumKey = function(e)
+  local ok, n = pcall(function() return e:GetFullName() end)
+  return ok and n or nil
+end
+S.enumEntries = function(e)
+  local out = {}
+  pcall(function()
+    e:ForEachName(function(name, value)
+      local s = ""; pcall(function() s = name:ToString() end)
+      out[#out + 1] = { name = s, value = value }
+    end)
+  end)
+  return out
+end
+-- значение перечисления p.enum для героя hero, или nil
+S.heroEnumValue = function(hero, p)
+  if not (valid(hero) and p.enum) then return nil end
+  -- 1) по имени героя среди значений перечисления (Low, Alone, Dime…)
+  local hn = heroName(hero):lower()
+  if hn ~= "" and hn ~= "?" then
+    for _, en in ipairs(S.enumEntries(p.enum)) do
+      local short = en.name:gsub("^.*::", ""):lower()
+      if short:find(hn, 1, true) then return en.value, "по имени " .. en.name end
+    end
+  end
+  -- 2) свойство героя того же перечисления (по всей цепочке классов)
+  local want = S.enumKey(p.enum)
+  if not want then return nil end
+  local found = nil
+  pcall(function()
+    local c, depth = hero:GetClass(), 0
+    while valid(c) and depth < 16 and not found do
+      c:ForEachProperty(function(pr)
+        if found then return end
+        local n = pr:GetFName():ToString()
+        local nl = n:lower()
+        if nl:find("companion") or nl:find("other") or nl:find("buddy") or nl:find("partner") or nl:find("target") then return end
+        local okE, e = pcall(function() return pr:GetEnum() end)
+        if okE and e and S.enumKey(e) == want then
+          local okV, v = pcall(function() return hero[n] end)
+          if okV and type(v) == "number" then found = { value = v, from = "свойство " .. n } end
+        end
+      end)
+      local oks, sup = pcall(function() return c:GetSuperStruct() end)
+      c = oks and sup or nil; depth = depth + 1
+    end
+  end)
+  if found then return found.value, found.from end
+  return nil
+end
 S.playpalSig = {}
 S.playpalCall = function(fnName, ...)
   local given = table.pack(...)
@@ -2504,9 +2561,14 @@ S.playpalCall = function(fnName, ...)
         elseif cn:find("Int") or cn == "FloatProperty" or cn == "DoubleProperty" or cn == "ByteProperty" or cn == "EnumProperty" then kind = "number"
         elseif cn == "StructProperty" then kind = "struct"
         elseif cn == "NameProperty" then kind = "name" end
-        local pcls = nil
+        local pcls, enum = nil, nil
         if kind == "object" then pcall(function() pcls = pr:GetPropertyClass() end) end
-        sig[#sig + 1] = { name = n, cls = cn, kind = kind, pcls = pcls }
+        if cn == "ByteProperty" or cn == "EnumProperty" then
+          local okE, e = pcall(function() return pr:GetEnum() end)
+          if okE and e then enum = e end
+        end
+        sig[#sig + 1] = { name = n, cls = cn, kind = kind, pcls = pcls, enum = enum,
+          heroType = (cn == "ByteProperty" or cn == "EnumProperty") and n:find("CharacterType") ~= nil }
       end)
     end)
     S.playpalSig[fnName] = sig
@@ -2514,6 +2576,14 @@ S.playpalCall = function(fnName, ...)
       local d = {}
       for _, p in ipairs(sig) do d[#d + 1] = p.name .. ":" .. p.cls end
       trail(string.format("команды напарнику: у %s другие параметры (%d вместо %d): %s — подбираю по видам", fnName, #sig, given.n, table.concat(d, ", ")))
+      for _, p in ipairs(sig) do
+        if p.enum then
+          local parts = {}
+          for _, en in ipairs(S.enumEntries(p.enum)) do parts[#parts + 1] = en.name .. "=" .. tostring(en.value) end
+          trail(string.format("команды напарнику: %s.%s — перечисление %s: %s", fnName, p.name,
+            S.enumKey(p.enum) or "?", #parts > 0 and table.concat(parts, ", ") or "значения не прочитались"))
+        end
+      end
     end
   end
   if #sig == 0 or #sig == given.n then return interactCmds()[fnName](interactCmds(), ...) end
@@ -2529,8 +2599,22 @@ S.playpalCall = function(fnName, ...)
   local used, args = {}, {}
   for i, p in ipairs(sig) do
     local v, found = nil, false
+    -- тип персонажа — у героя, которому даём команду; наши числа на него не тратим
+    if p.heroType then
+      local hero = isHero(given[1]) and given[1] or S.buddy
+      local hv, from = S.heroEnumValue(hero, p)
+      if hv == nil then
+        trail(string.format("команды напарнику: %s — не узнал %s для %s, команду не даю", fnName, p.name, heroName(hero)))
+        return nil
+      end
+      if not (S.typeLogged or {})[fnName] then
+        S.typeLogged = S.typeLogged or {}; S.typeLogged[fnName] = true
+        trail(string.format("команды напарнику: %s.%s = %s для %s (%s)", fnName, p.name, tostring(hv), heroName(hero), from))
+      end
+      v, found = hv, true
+    end
     -- «контекст мира» — любой объект уровня; наши значения на него не тратим
-    if p.kind == "object" and (p.name:find("WorldContext") or p.name:find("Context")) then v, found = given[1], true end
+    if not found and p.kind == "object" and (p.name:find("WorldContext") or p.name:find("Context")) then v, found = given[1], true end
     -- объект — тот из наших, что подходит по классу параметра
     if not found and p.kind == "object" and p.pcls then
       for j = 1, given.n do
@@ -5811,4 +5895,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.15.8 загружен. F9 — меню кооператива")
+log("v9.15.9 загружен. F9 — меню кооператива")
