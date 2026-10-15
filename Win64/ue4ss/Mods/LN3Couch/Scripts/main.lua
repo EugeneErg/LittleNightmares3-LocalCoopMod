@@ -1480,7 +1480,7 @@ S.EN = {
   ["Геймпад игрока 2 не отвечает — проверьте подключение"] = "Player 2's gamepad is not responding — check the connection",
   ["Не нашёл двух героев — загрузите игру"] = "Couldn't find both heroes — load a game first",
   ["Игрок 2 подключён"] = "Player 2 joined",
-  ["Игра будет вдвоём"] = "The game will be two-player", ["Сначала уберите вещь из рук"] = "Put the item away first", ["Подсаживает второй игрок"] = "Player 2 gives the boost", ["Игра будет на одного"] = "The game will be single-player",
+  ["Игра будет вдвоём"] = "The game will be two-player", ["Сначала уберите вещь из рук"] = "Put the item away first", ["Подсадить может только второй игрок"] = "Only Player 2 can give the boost", ["Игра будет на одного"] = "The game will be single-player",
   ["Напарником снова управляет ИИ"] = "The AI controls the companion again",
   ["Настройки сброшены"] = "Settings reset",
   ["Назначено"] = "Assigned",
@@ -2799,6 +2799,133 @@ S.roleSwapFor = function(hero)
   trail(string.format("роль: %s на время подсадки — напарник (%s)", heroName(hero), table.concat(ks, ", ")))
   S.roleSwap = { hero = hero, value = P, list = done }
   return P
+end
+-- ДИАГНОСТИКА ДЛЯ НОВОЙ ВЕРСИИ ИГРЫ (только чтение, по разу за запуск).
+-- Нужна, чтобы найти, как дать подсаживать и герою игрока 1.
+-- значения полей объекта (флаги, числа, перечисления, имена, объекты — классом)
+S.objFields = function(obj, stopAt)
+  local parts = {}
+  pcall(function()
+    local c, depth = obj:GetClass(), 0
+    while valid(c) and depth < 12 do
+      local cn0 = c:GetFName():ToString()
+      if cn0 == (stopAt or "Actor") or cn0 == "Object" or cn0 == "ActorComponent" then break end
+      c:ForEachProperty(function(pr)
+        local n = pr:GetFName():ToString()
+        local cn = ""; pcall(function() cn = pr:GetClass():GetFName():ToString() end)
+        local okV, v = pcall(function() return obj[n] end)
+        if not okV then return end
+        local t = type(v)
+        if t == "number" or t == "boolean" then parts[#parts + 1] = n .. "=" .. tostring(v)
+        elseif cn:find("Object") or cn:find("Class") then
+          parts[#parts + 1] = n .. "=" .. (valid(v) and (isHero(v) and heroName(v) or clsName(v)) or "пусто")
+        elseif cn == "NameProperty" then pcall(function() parts[#parts + 1] = n .. "=" .. v:ToString() end) end
+      end)
+      local oks, sup = pcall(function() return c:GetSuperStruct() end)
+      c = oks and sup or nil; depth = depth + 1
+    end
+  end)
+  return table.concat(parts, ", ")
+end
+-- место подсадки: класс и поля (раз на класс места)
+S.diagSpot = function(spot)
+  if not valid(spot) then return end
+  S.diagSpotDone = S.diagSpotDone or {}
+  local k = clsName(spot)
+  if S.diagSpotDone[k] then return end
+  S.diagSpotDone[k] = true
+  trail(string.format("диагностика: место подсадки %s: %s", k, S.objFields(spot)))
+end
+-- объект-команда, которую вернула игра (подсадка Alone работает — смотрим, что внутри)
+S.diagAction = function(fnName, action)
+  if not (S.newApi and valid(action)) then return end
+  S.diagActionDone = S.diagActionDone or {}
+  if S.diagActionDone[fnName] then return end
+  S.diagActionDone[fnName] = true
+  trail(string.format("диагностика: команда %s → %s: %s", fnName, clsName(action), S.objFields(action, "Object")))
+end
+-- где игра ссылается на героев и чем отличаются их компоненты
+S.diagRoles = function()
+  if S.diagRolesDone or not (valid(S.p1) and valid(S.buddy)) then return end
+  S.diagRolesDone = true
+  local function comps(h)
+    local out = {}
+    pcall(function()
+      local arr = h:K2_GetComponentsByClass(StaticFindObject("/Script/Engine.ActorComponent"))
+      arr:ForEach(function(_, el) local c = el:get(); if valid(c) then out[clsName(c)] = c end end)
+    end)
+    return out
+  end
+  local cl, ca = comps(S.p1), comps(S.buddy)
+  local onlyL, onlyA = {}, {}
+  for k in pairs(cl) do if not ca[k] then onlyL[#onlyL + 1] = k end end
+  for k in pairs(ca) do if not cl[k] then onlyA[#onlyA + 1] = k end end
+  table.sort(onlyL); table.sort(onlyA)
+  trail(string.format("диагностика: компоненты только у %s: %s | только у %s: %s", heroName(S.p1), #onlyL > 0 and table.concat(onlyL, ", ") or "нет",
+    heroName(S.buddy), #onlyA > 0 and table.concat(onlyA, ", ") or "нет"))
+  -- поля компонентов «про напарника» у обоих героев
+  for k, c in pairs(ca) do
+    if k:find("Playpal") or k:find("Companion") or k:find("Buddy") or k:find("AI") then
+      trail(string.format("диагностика: %s у %s: %s", k, heroName(S.buddy), S.objFields(c, "ActorComponent")))
+      if cl[k] then trail(string.format("диагностика: %s у %s: %s", k, heroName(S.p1), S.objFields(cl[k], "ActorComponent"))) end
+    end
+  end
+  -- кто ссылается на героев: подсистема персонажей, PIP, ИИ, контроллеры, режим игры
+  local holders = {}
+  local function add(label, o) if valid(o) then holders[#holders + 1] = { label = label, o = o } end end
+  pcall(function() add("KosmosCharactersSubsystem", FindFirstOf("KosmosCharactersSubsystem")) end)
+  pcall(function() add("KosmosPIPManager", FindFirstOf("KosmosPIPManager")) end)
+  pcall(function() add("ИИ", S.ai) end)
+  pcall(function() add("контроллер 1", S.pc1) end)
+  pcall(function() add("контроллер 2", S.pc2) end)
+  pcall(function() add("режим игры", UEHelpers.GetGameModeBase()) end)
+  pcall(function() add("состояние игры", UEHelpers.GetGameplayStatics():GetGameState(UEHelpers.GetWorld())) end)
+  for _, hd in ipairs(holders) do
+    local refs = {}
+    pcall(function()
+      local c, depth = hd.o:GetClass(), 0
+      while valid(c) and depth < 12 do
+        c:ForEachProperty(function(pr)
+          local n = pr:GetFName():ToString()
+          local cn = ""; pcall(function() cn = pr:GetClass():GetFName():ToString() end)
+          if cn:find("Object") then
+            local okV, v = pcall(function() return hd.o[n] end)
+            if okV and valid(v) and isHero(v) then refs[#refs + 1] = n .. "→" .. heroName(v) end
+          elseif cn == "ArrayProperty" then
+            pcall(function()
+              local i = 0
+              hd.o[n]:ForEach(function(_, el)
+                i = i + 1
+                local v = el:get()
+                if valid(v) and isHero(v) then refs[#refs + 1] = string.format("%s[%d]→%s", n, i, heroName(v)) end
+              end)
+            end)
+          elseif cn == "ByteProperty" or cn == "EnumProperty" then
+            if n:find("Companion") or n:find("Character") or n:find("Playpal") then
+              local okV, v = pcall(function() return hd.o[n] end)
+              if okV then refs[#refs + 1] = n .. "=" .. tostring(v) end
+            end
+          end
+        end)
+        local oks, sup = pcall(function() return c:GetSuperStruct() end)
+        c = oks and sup or nil; depth = depth + 1
+      end
+    end)
+    trail(string.format("диагностика: %s (%s) ссылается: %s", hd.label, clsName(hd.o), #refs > 0 and table.concat(refs, ", ") or "ни на кого из героев"))
+  end
+end
+-- что делает сама игра, когда Low жмёт «схватить» у места подсадки (мод не вмешивается)
+S.nativeWatchTick = function()
+  local w = S.nativeWatch; if not w then return end
+  if now() > w.untilT then
+    trail(string.format("диагностика: игра сама за 4 с: монтажи Low=%s, Alone=%s", w.lowM or "нет", w.aloneM or "нет"))
+    S.nativeWatch = nil
+    return
+  end
+  pcall(function()
+    local m = S.p1:GetCurrentMontage(); if valid(m) then w.lowM = m:GetFName():ToString() end
+    local m2 = S.buddy:GetCurrentMontage(); if valid(m2) then w.aloneM = m2:GetFName():ToString() end
+  end)
 end
 -- может ли герой hero на время подсадки стать «напарником-ботом»
 S.canTakeRole = function(hero)
@@ -4159,6 +4286,7 @@ S.boostStart = function(hero, owner, spot)
   pcall(S.boostPassThrough, true)
   local ok, action = try("PlaypalBoost", function() return S.playpalCall("PlaypalBoost", hero, spot) end)
   if ok and valid(action) then
+    pcall(S.diagAction, "PlaypalBoost", action)
     try("PlaypalBoost Activate", function() action:Activate() end)
     log("подсадка: %s подсаживает (%s)", heroName(hero), spot:GetFName():ToString())
     return true
@@ -4310,6 +4438,7 @@ S.anyDying = function()
 end
 S.boostInput = function()
   local e1, e2 = S.rbEdges()
+  if S.nativeWatch then pcall(S.nativeWatchTick) end
   -- во время сцены смерти подсадку не начинаем, а идущую — заканчиваем:
   -- иначе герой остаётся у ИИ, когда игра возрождает героев, и игра падает
   if S.frames % 6 == 0 then S.dyingNow = S.anyDying() end
@@ -4346,11 +4475,17 @@ S.tryBoost = function(hero, owner, who)
   -- v9.15.9: в новой версии игры подсаживает только «напарник-бот». Если
   -- герою игрока 1 эту роль на время дать нельзя — подсаживает герой
   -- игрока 2, а Low запрыгивает (подсадка работает, просто даёт её Alone).
+  -- Подсаживает только тот, кто может: героя игрока 2 не забираем, а
+  -- нажатие игрока 1 оставляем самой игре (и записываем, что она делает).
   if hero == S.p1 and valid(S.buddy) and not S.canTakeRole(hero) then
-    if not S.roleFallbackSaid then S.roleFallbackSaid = true; trail("подсадка: Low не может быть напарником в этой версии игры — подсаживает Alone") end
-    toast("Подсаживает второй игрок")
-    hero, owner, who = S.buddy, S.pc2, heroName(S.buddy)
+    if not S.roleFallbackSaid then S.roleFallbackSaid = true; trail("подсадка: Low не может быть напарником в этой версии игры — подсаживать может только второй игрок") end
+    toast("Подсадить может только второй игрок")
+    pcall(S.diagRoles)
+    pcall(S.diagSpot, spot)
+    S.nativeWatch = { untilT = now() + 4, spot = spot }
+    return
   end
+  if S.newApi then pcall(S.diagRoles) end
   local stash = CFG.boost_stash ~= false
   local ga = stash and S.p1EquipAbility(hero) or nil
   local item = stash and S.p1HeldItem(hero) or nil
