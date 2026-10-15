@@ -1480,7 +1480,7 @@ S.EN = {
   ["Геймпад игрока 2 не отвечает — проверьте подключение"] = "Player 2's gamepad is not responding — check the connection",
   ["Не нашёл двух героев — загрузите игру"] = "Couldn't find both heroes — load a game first",
   ["Игрок 2 подключён"] = "Player 2 joined",
-  ["Игра будет вдвоём"] = "The game will be two-player", ["Сначала уберите вещь из рук"] = "Put the item away first", ["Игра будет на одного"] = "The game will be single-player",
+  ["Игра будет вдвоём"] = "The game will be two-player", ["Сначала уберите вещь из рук"] = "Put the item away first", ["Подсаживает второй игрок"] = "Player 2 gives the boost", ["Игра будет на одного"] = "The game will be single-player",
   ["Напарником снова управляет ИИ"] = "The AI controls the companion again",
   ["Настройки сброшены"] = "Settings reset",
   ["Назначено"] = "Assigned",
@@ -2083,6 +2083,7 @@ end
 
 local function setCoop(on)
   if on == S.coop then return end
+  if not on then pcall(function() S.roleRestore() end) end
   if on then
     pcall(function() S.checkApi() end)
     applyGamepadRouting()
@@ -2713,9 +2714,137 @@ S.otherHero = function(hero)
   if hero == S.buddy then return S.p1 end
   return nil
 end
+-- РОЛЬ «НАПАРНИК-БОТ». В новой версии тип — это EKosmosCompanionCharacter:
+-- Companion_Playpal (бот-напарник), Companion01… Игра сама передаёт
+-- Companion_Playpal для Alone. Значение этой роли:
+S.playpalValue = function()
+  local learned = CFG.learned_types and valid(S.buddy) and CFG.learned_types[heroName(S.buddy)]
+  if type(learned) == "number" then return learned, "игра сама (запомнено)" end
+  local info = S.typeDiscover()
+  for _, e in ipairs(info.enums) do
+    if (S.enumKey(e) or ""):find("CompanionCharacter") then
+      for _, en in ipairs(S.enumEntries(e)) do
+        if en.name:gsub("^.*::", "") == "Companion_Playpal" then return en.value, "роль " .. en.name end
+      end
+    end
+  end
+  return nil
+end
+-- Где игра хранит роль героя: свойства-перечисления CompanionCharacter у
+-- самого героя и у его компонентов. { ключ = { obj, name, value } }
+S.roleSites = function(actor)
+  local out = {}
+  local function scan(obj, prefix)
+    pcall(function()
+      local c, depth = obj:GetClass(), 0
+      while valid(c) and depth < 16 do
+        c:ForEachProperty(function(pr)
+          local n = pr:GetFName():ToString()
+          local cn = ""; pcall(function() cn = pr:GetClass():GetFName():ToString() end)
+          if cn == "EnumProperty" or cn == "ByteProperty" then
+            local ek = ""
+            pcall(function() local e = pr:GetEnum(); if e then ek = S.enumKey(e) or "" end end)
+            if ek:find("CompanionCharacter") or (ek == "" and n:find("Companion")) then
+              local okV, v = pcall(function() return obj[n] end)
+              if okV and type(v) == "number" then out[prefix .. n] = { obj = obj, name = n, value = v } end
+            end
+          end
+        end)
+        local oks, sup = pcall(function() return c:GetSuperStruct() end)
+        c = oks and sup or nil; depth = depth + 1
+      end
+    end)
+  end
+  scan(actor, "")
+  pcall(function()
+    local comps = actor:K2_GetComponentsByClass(StaticFindObject("/Script/Engine.ActorComponent"))
+    comps:ForEach(function(_, el)
+      local comp = el:get()
+      if valid(comp) then scan(comp, clsName(comp) .. ".") end
+    end)
+  end)
+  return out
+end
+S.roleText = function(sites)
+  local parts = {}
+  for k, st in pairs(sites) do parts[#parts + 1] = k .. "=" .. tostring(st.value) end
+  table.sort(parts)
+  return #parts > 0 and table.concat(parts, ", ") or "нет"
+end
+-- на время подсадки делаем «напарником-ботом» героя hero (обычно Low):
+-- меняем роль местами с героем игрока 2; вернуть — S.roleRestore()
+S.roleSwapFor = function(hero)
+  if S.roleSwap then return S.roleSwap.value end
+  local P = S.playpalValue()
+  local buddy = S.buddy
+  if P == nil or not valid(buddy) or hero == buddy then return nil end
+  local mine, theirs = S.roleSites(hero), S.roleSites(buddy)
+  local aiSites = valid(S.ai) and S.roleSites(S.ai) or {}
+  trail(string.format("роль: у %s %s | у %s %s | у ИИ %s", heroName(hero), S.roleText(mine), heroName(buddy), S.roleText(theirs), S.roleText(aiSites)))
+  local done = {}
+  for k, b in pairs(theirs) do
+    local m = mine[k]
+    if m and b.value == P and m.value ~= P then
+      local okA = pcall(function() m.obj[m.name] = P end)
+      local okB = pcall(function() b.obj[b.name] = m.value end)
+      if okA and okB then done[#done + 1] = { m = m, b = b, k = k } end
+    end
+  end
+  if #done == 0 then
+    trail(string.format("роль: не нашёл, где игра хранит роль «напарник» — подсадку %s не начинаю", heroName(hero)))
+    return nil
+  end
+  local ks = {}
+  for _, d in ipairs(done) do ks[#ks + 1] = d.k end
+  trail(string.format("роль: %s на время подсадки — напарник (%s)", heroName(hero), table.concat(ks, ", ")))
+  S.roleSwap = { hero = hero, value = P, list = done }
+  return P
+end
+-- может ли герой hero на время подсадки стать «напарником-ботом»
+S.canTakeRole = function(hero)
+  -- только для другой версии игры (там команды получают тип, а не героя);
+  -- на версии, под которую сделан мод, подсадка работает как раньше
+  if not S.newApi then return true end
+  local P = S.playpalValue()
+  if P == nil then return true end          -- старая версия игры: роль не нужна
+  if hero == S.buddy then return true end
+  -- результат запоминаем для этой пары героев (после смены уровня — заново)
+  local pair = tostring(hero) .. "|" .. tostring(S.buddy)
+  if S.canRolePair ~= pair then S.canRole, S.canRolePair = nil, pair end
+  if S.canRole == nil then
+    local mine, theirs = S.roleSites(hero), S.roleSites(S.buddy)
+    S.canRole = false
+    for k, b in pairs(theirs) do
+      if mine[k] and b.value == P and mine[k].value ~= P then S.canRole = true end
+    end
+    trail(string.format("роль: у %s %s | у %s %s — %s", heroName(hero), S.roleText(mine), heroName(S.buddy), S.roleText(theirs),
+      S.canRole and "можно поменять на время подсадки" or "поменять нельзя"))
+  end
+  return S.canRole
+end
+S.roleRestore = function()
+  local sw = S.roleSwap; if not sw then return end
+  S.roleSwap = nil
+  for _, d in ipairs(sw.list) do
+    pcall(function() d.m.obj[d.m.name] = d.m.value end)
+    pcall(function() d.b.obj[d.b.name] = d.b.value end)
+  end
+  trail("роль: вернул как было")
+end
 S.resolveHeroType = function(hero, p)
   S.typeCache = S.typeCache or {}
   local hn = heroName(hero)
+  -- роль на время подсадки
+  if S.roleSwap and S.roleSwap.hero == hero then return S.roleSwap.value, "роль на время подсадки" end
+  -- герой игрока 2 — бывший бот-напарник: его роль известна сразу
+  if hero == S.buddy and not (CFG.learned_types and CFG.learned_types[hn]) then
+    local P, from = S.playpalValue()
+    if P ~= nil then return P, from end
+  end
+  -- герой игрока 1 в новой версии: только через подмену роли
+  if hero == S.p1 and S.playpalValue() ~= nil then
+    return S.roleSwapFor(hero), "роль на время подсадки"
+  end
   if S.typeCache[hn] then return S.typeCache[hn].v, S.typeCache[hn].from end
   -- 0) значение, которое игра сама передавала этому герою (запомнено)
   local learned = CFG.learned_types and CFG.learned_types[hn]
@@ -2772,11 +2901,18 @@ S.resolveHeroType = function(hero, p)
     local sb = (kb:find(p.name, 1, true) and 2) or (kb:find("CharacterType") and 1) or 0
     return sa > sb
   end)
+  -- имя героя должно совпасть со значением целиком (или отдельным словом):
+  -- «SlowWalk» — не «Low»
   local lhn = hn:lower()
   for _, e in ipairs(enums) do
-    for _, en in ipairs(S.enumEntries(e)) do
-      local short = en.name:gsub("^.*::", ""):lower()
-      if lhn ~= "" and lhn ~= "?" and short:find(lhn, 1, true) then return done(en.value, "по имени " .. en.name) end
+    local key = S.enumKey(e) or ""
+    if key:find("Companion") or key:find("CharacterType") then
+      for _, en in ipairs(S.enumEntries(e)) do
+        local short = en.name:gsub("^.*::", ""):lower()
+        local hit = (short == lhn)
+        for w in short:gmatch("[%a%d]+") do if w == lhn then hit = true end end
+        if lhn ~= "" and lhn ~= "?" and hit then return done(en.value, "по имени " .. en.name) end
+      end
     end
   end
   return nil
@@ -2840,6 +2976,7 @@ S.cmdCall = function(group, fnName, ...)
     sig = S.readSig(S.CMD_CLASSES[group], fnName)
     S.cmdSig[key] = sig
     if #sig ~= 0 and #sig ~= given.n then
+      S.newApi = true
       trail(string.format("команды напарнику: у %s другие параметры (%d вместо %d): %s — подбираю по видам", fnName, #sig, given.n, S.sigText(sig)))
       for _, p in ipairs(sig) do
         if p.enum then trail(string.format("команды напарнику: %s.%s — перечисление %s: %s", fnName, p.name, S.enumKey(p.enum) or "?", S.enumText(p.enum))) end
@@ -2940,6 +3077,7 @@ S.checkApi = function()
   end
   if #diff == 0 then trail("команды напарнику: версия игры совпадает с той, под которую сделан мод")
   else
+    S.newApi = true
     trail("команды напарнику: ДРУГАЯ ВЕРСИЯ ИГРЫ — " .. table.concat(diff, "; "))
     pcall(S.apiFingerprint)
     pcall(S.learnHooks)
@@ -3602,6 +3740,7 @@ S.animDiff = function(h, base, label)
   trail(string.format("анимация %s %s: %s | изменилось: %s", heroName(h), label, S.animState(h), #ch > 0 and table.concat(ch, "; ", 1, math.min(#ch, 40)) or "ничего"))
 end
 S.boostEnd = function(reason)
+  pcall(S.roleRestore)
   local b = S.boost; if not b then return end
   -- разбор: через 1,5 с после подсадки сравним анимацию героев со снимком до неё
   S.animCheckAt = S.frames + 90
@@ -4190,6 +4329,14 @@ end
 S.tryBoost = function(hero, owner, who)
   local spot = S.nearestBoostTo(hero)
   if not spot then return end
+  -- v9.15.9: в новой версии игры подсаживает только «напарник-бот». Если
+  -- герою игрока 1 эту роль на время дать нельзя — подсаживает герой
+  -- игрока 2, а Low запрыгивает (подсадка работает, просто даёт её Alone).
+  if hero == S.p1 and valid(S.buddy) and not S.canTakeRole(hero) then
+    if not S.roleFallbackSaid then S.roleFallbackSaid = true; trail("подсадка: Low не может быть напарником в этой версии игры — подсаживает Alone") end
+    toast("Подсаживает второй игрок")
+    hero, owner, who = S.buddy, S.pc2, heroName(S.buddy)
+  end
   local stash = CFG.boost_stash ~= false
   local ga = stash and S.p1EquipAbility(hero) or nil
   local item = stash and S.p1HeldItem(hero) or nil
@@ -6075,6 +6222,7 @@ local function Tick()
     if S.frames % 60 == 0 and acquire() then
       -- подсадка, прерванная смертью: ИИ-контроллер и камера игрока 1 остались
       -- в «режиме подсадки» — возвращаем всё как было
+      pcall(S.roleRestore)
       if S.boost or S.cam1Frozen or S.cam1PawnHack then
         S.boost = nil
         try("ai tick off", function() S.ai:SetActorTickEnabled(false) end)
