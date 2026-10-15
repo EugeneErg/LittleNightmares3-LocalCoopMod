@@ -2790,15 +2790,28 @@ S.roleSwapFor = function(hero)
       if okA and okB then done[#done + 1] = { m = m, b = b, k = k } end
     end
   end
-  if #done == 0 then
+  local aiPrev = nil
+  if S.aiPlaypal() == buddy then
+    local okP = pcall(function() S.ai.Playpal = hero end)
+    if okP and S.aiPlaypal() == hero then aiPrev = buddy end
+  end
+  if #done == 0 and not aiPrev then
     trail(string.format("роль: не нашёл, где игра хранит роль «напарник» — подсадку %s не начинаю", heroName(hero)))
     return nil
   end
   local ks = {}
   for _, d in ipairs(done) do ks[#ks + 1] = d.k end
+  if aiPrev then ks[#ks + 1] = "ИИ.Playpal" end
   trail(string.format("роль: %s на время подсадки — напарник (%s)", heroName(hero), table.concat(ks, ", ")))
-  S.roleSwap = { hero = hero, value = P, list = done }
+  S.roleSwap = { hero = hero, value = P, list = done, aiPrev = aiPrev }
   return P
+end
+-- кого ИИ-контроллер ведёт как напарника (поле Playpal), или nil
+S.aiPlaypal = function()
+  if not valid(S.ai) then return nil end
+  local ok, v = pcall(function() return S.ai.Playpal end)
+  if ok and valid(v) then return v end
+  return nil
 end
 -- ДИАГНОСТИКА ДЛЯ НОВОЙ ВЕРСИИ ИГРЫ (только чтение, по разу за запуск).
 -- Нужна, чтобы найти, как дать подсаживать и герою игрока 1.
@@ -2944,8 +2957,12 @@ S.canTakeRole = function(hero)
     for k, b in pairs(theirs) do
       if mine[k] and b.value == P and mine[k].value ~= P then S.canRole = true end
     end
-    trail(string.format("роль: у %s %s | у %s %s — %s", heroName(hero), S.roleText(mine), heroName(S.buddy), S.roleText(theirs),
-      S.canRole and "можно поменять на время подсадки" or "поменять нельзя"))
+    -- v9.15.9: роль хранит ИИ-контроллер — поле Playpal (кого он ведёт как
+    -- напарника). Его на время подсадки и меняем.
+    if not S.canRole and S.aiPlaypal() == S.buddy then S.canRole = true end
+    local ap = S.aiPlaypal()
+    trail(string.format("роль: у %s %s | у %s %s | ИИ.Playpal=%s — %s", heroName(hero), S.roleText(mine), heroName(S.buddy), S.roleText(theirs),
+      valid(ap) and heroName(ap) or "нет", S.canRole and "можно поменять на время подсадки" or "поменять нельзя"))
   end
   return S.canRole
 end
@@ -2956,6 +2973,7 @@ S.roleRestore = function()
     pcall(function() d.m.obj[d.m.name] = d.m.value end)
     pcall(function() d.b.obj[d.b.name] = d.b.value end)
   end
+  if sw.aiPrev then pcall(function() S.ai.Playpal = sw.aiPrev end) end
   trail("роль: вернул как было")
 end
 S.resolveHeroType = function(hero, p)
@@ -4287,6 +4305,14 @@ S.boostStart = function(hero, owner, spot)
   local ok, action = try("PlaypalBoost", function() return S.playpalCall("PlaypalBoost", hero, spot) end)
   if ok and valid(action) then
     pcall(S.diagAction, "PlaypalBoost", action)
+    -- v9.15.9 (новая версия игры, подсаживает герой игрока 1): команде явно
+    -- указываем наш ИИ-контроллер, который сейчас ведёт этого героя
+    if S.newApi and S.roleSwap and valid(S.ai) then
+      pcall(function()
+        local cur = action.AIController
+        if not valid(cur) then action.AIController = S.ai; trail("подсадка: команде указан ИИ-контроллер") end
+      end)
+    end
     try("PlaypalBoost Activate", function() action:Activate() end)
     log("подсадка: %s подсаживает (%s)", heroName(hero), spot:GetFName():ToString())
     return true
