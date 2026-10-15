@@ -2509,42 +2509,6 @@ S.enumEntries = function(e)
   end)
   return out
 end
--- значение перечисления p.enum для героя hero, или nil
-S.heroEnumValue = function(hero, p)
-  if not (valid(hero) and p.enum) then return nil end
-  -- 1) по имени героя среди значений перечисления (Low, Alone, Dime…)
-  local hn = heroName(hero):lower()
-  if hn ~= "" and hn ~= "?" then
-    for _, en in ipairs(S.enumEntries(p.enum)) do
-      local short = en.name:gsub("^.*::", ""):lower()
-      if short:find(hn, 1, true) then return en.value, "по имени " .. en.name end
-    end
-  end
-  -- 2) свойство героя того же перечисления (по всей цепочке классов)
-  local want = S.enumKey(p.enum)
-  if not want then return nil end
-  local found = nil
-  pcall(function()
-    local c, depth = hero:GetClass(), 0
-    while valid(c) and depth < 16 and not found do
-      c:ForEachProperty(function(pr)
-        if found then return end
-        local n = pr:GetFName():ToString()
-        local nl = n:lower()
-        if nl:find("companion") or nl:find("other") or nl:find("buddy") or nl:find("partner") or nl:find("target") then return end
-        local okE, e = pcall(function() return pr:GetEnum() end)
-        if okE and e and S.enumKey(e) == want then
-          local okV, v = pcall(function() return hero[n] end)
-          if okV and type(v) == "number" then found = { value = v, from = "свойство " .. n } end
-        end
-      end)
-      local oks, sup = pcall(function() return c:GetSuperStruct() end)
-      c = oks and sup or nil; depth = depth + 1
-    end
-  end)
-  if found then return found.value, found.from end
-  return nil
-end
 -- Общий переходник для команд напарнику (подсадка, ящики, переноска, оружие):
 -- если у функции игры столько же параметров, сколько передаём мы (версия
 -- игры, под которую сделан мод), вызываем как есть. Иначе раскладываем наши
@@ -2594,7 +2558,7 @@ S.readSig = function(classPath, fnName)
       if kind == "object" then pcall(function() pcls = pr:GetPropertyClass() end) end
       local enum = S.propEnum(pr, n, cn)
       sig[#sig + 1] = { name = n, cls = cn, kind = kind, pcls = pcls, enum = enum,
-        heroType = (cn == "ByteProperty" or cn == "EnumProperty") and n:find("CharacterType") ~= nil }
+        heroType = (cn == "ByteProperty" or cn == "EnumProperty") and S.isTypeParam(n) }
     end)
   end)
   return sig, ret
@@ -2632,88 +2596,239 @@ S.apiFingerprint = function()
     end
   end
 end
--- Функции игры «найти героя по типу» (Get…/Find…(тип) -> объект). Нужны,
--- чтобы ПЕРЕД командой проверить, что игра по этому типу найдёт именно нашего
--- героя, — и подобрать тип, если по имени угадали неверно.
-S.typeLookups = function(enum)
-  local key = S.enumKey(enum)
-  S.lookupCache = S.lookupCache or {}
-  if not key then return {} end
-  if S.lookupCache[key] then return S.lookupCache[key] end
-  local out = {}
-  local owners = {
-    { path = "/Script/Kosmos.KosmosBlueprintFunctionLibrary", obj = function() return StaticFindObject("/Script/Kosmos.Default__KosmosBlueprintFunctionLibrary") end },
-    { path = "/Script/Kosmos.KosmosCharactersSubsystem", obj = function() return FindFirstOf("KosmosCharactersSubsystem") end },
-  }
-  for group, path in pairs(S.CMD_CLASSES) do
-    owners[#owners + 1] = { path = path, obj = function() return S.cmdObj(group) end }
-  end
-  for _, o in ipairs(owners) do
-    local names = {}
-    pcall(function() StaticFindObject(o.path):ForEachFunction(function(f) names[#names + 1] = f:GetFName():ToString() end) end)
-    for _, fn in ipairs(names) do
-      if fn:find("^Get") or fn:find("^Find") then
-        local sig, ret = S.readSig(o.path, fn)
-        if ret and S.propKind(ret) == "object" then
-          local enumAt, others, ok = nil, 0, true
-          for i, p in ipairs(sig) do
-            if p.enum and S.enumKey(p.enum) == key then
-              if enumAt then ok = false else enumAt = i end
-            elseif p.kind == "object" and p.name:find("Context") then others = others + 1
-            else ok = false end
+-- ТИП ПЕРСОНАЖА (CompanionCharacterType) В НОВОЙ ВЕРСИИ ИГРЫ. Параметр —
+-- байт, и UE4SS не всегда отдаёт его перечисление, поэтому тип ищем тремя
+-- путями (раз за запуск, всё пишем в trail.txt):
+--  1) функции игры Get…/Find…(…CharacterType) -> объект: перебираем значения
+--     и смотрим, по какому игра возвращает нашего героя — это ответ самой игры;
+--  2) свойство героя …CharacterType (берём, только если у героев оно разное);
+--  3) перечисления игры с Companion/CharacterType в имени — по имени героя.
+S.isTypeParam = function(n) return n:find("CharacterType") ~= nil or n:find("CompanionType") ~= nil end
+S.fnSig = function(f)
+  local sig, ret = {}, nil
+  pcall(function()
+    f:ForEachProperty(function(pr)
+      local n = pr:GetFName():ToString()
+      local cn = ""; pcall(function() cn = pr:GetClass():GetFName():ToString() end)
+      if n == "ReturnValue" then ret = cn; return end
+      sig[#sig + 1] = { name = n, cls = cn, kind = S.propKind(cn) }
+    end)
+  end)
+  return sig, ret
+end
+S.typeDiscover = function()
+  if S.typeInfo then return S.typeInfo end
+  local info = { enums = {}, lookups = {}, fns = {} }
+  S.typeInfo = info
+  pcall(function()
+    ForEachUObject(function(o)
+      pcall(function()
+        local cn = o:GetClass():GetFName():ToString()
+        if cn == "Enum" or cn == "UserDefinedEnum" then
+          local n = o:GetFName():ToString()
+          if n:find("Companion") or n:find("CharacterType") or n:find("Playpal") then info.enums[#info.enums + 1] = o end
+        elseif cn == "Function" then
+          local full = o:GetFullName()
+          if full:find("/Script/Kosmos%.") then
+            local has = false
+            o:ForEachProperty(function(pr) if S.isTypeParam(pr:GetFName():ToString()) then has = true end end)
+            if has then info.fns[#info.fns + 1] = o end
           end
-          if ok and enumAt then out[#out + 1] = { owner = o, fn = fn, sig = sig, enumAt = enumAt } end
         end
+      end)
+    end)
+  end)
+  for _, e in ipairs(info.enums) do
+    trail(string.format("тип героя: перечисление %s: %s", S.enumKey(e) or "?", S.enumText(e)))
+  end
+  for _, f in ipairs(info.fns) do
+    local fn = f:GetFName():ToString()
+    local owner = ""; pcall(function() owner = f:GetOuter():GetFName():ToString() end)
+    local sig, ret = S.fnSig(f)
+    if not fn:find("^Playpal") then
+      trail(string.format("тип героя: функция %s:%s(%s)%s", owner, fn, S.sigText(sig), ret and (" -> " .. ret) or ""))
+    end
+    -- годится для проверки: Get…/Find…, возвращает объект, параметры — только
+    -- контекст (объект) и один тип
+    if (fn:find("^Get") or fn:find("^Find")) and ret and S.propKind(ret) == "object" then
+      local typeAt, ok = nil, true
+      for i, p in ipairs(sig) do
+        if S.isTypeParam(p.name) and (p.kind == "number") then
+          if typeAt then ok = false else typeAt = i end
+        elseif not (p.kind == "object" and p.name:find("Context")) then ok = false end
+      end
+      if ok and typeAt then
+        info.lookups[#info.lookups + 1] = { fn = fn, owner = owner, sig = sig, typeAt = typeAt }
       end
     end
   end
-  S.lookupCache[key] = out
   local d = {}
-  for _, l in ipairs(out) do d[#d + 1] = l.fn end
-  trail(string.format("команды напарнику: поиск героя по типу %s — %s", key, #d > 0 and table.concat(d, ", ") or "функций игры не нашёл"))
-  return out
+  for _, l in ipairs(info.lookups) do d[#d + 1] = l.owner .. ":" .. l.fn end
+  trail(string.format("тип героя: функций проверки %d%s", #d, #d > 0 and (" — " .. table.concat(d, ", ")) or ""))
+  return info
 end
--- кого игра найдёт по типу value (через первую подходящую функцию), или nil
+-- объект, у которого вызывать функцию проверки: живой экземпляр класса или CDO
+S.lookupOwner = function(l)
+  local o = nil
+  pcall(function() o = FindFirstOf(l.owner) end)
+  if valid(o) then return o end
+  pcall(function() o = StaticFindObject("/Script/Kosmos.Default__" .. l.owner) end)
+  if valid(o) then return o end
+  return nil
+end
 S.lookupHero = function(l, value, ctx)
-  local obj = l.owner.obj()
-  if not valid(obj) then return nil, false end
+  local obj = S.lookupOwner(l)
+  if not obj then return nil, false end
   local args = {}
-  for i, p in ipairs(l.sig) do args[i] = (i == l.enumAt) and value or ctx end
+  for i = 1, #l.sig do args[i] = (i == l.typeAt) and value or ctx end
   local ok, r = pcall(function() return obj[l.fn](obj, table.unpack(args, 1, #l.sig)) end)
   if not ok then return nil, false end
   return valid(r) and r or nil, true
 end
--- тип персонажа для героя: по имени/свойству, затем сверка с игрой.
--- Функция поиска считается «про героев», если хоть для одного значения
--- возвращает героя. Если такая есть, верим ей: берём значение, по которому
--- она находит нашего героя; не находит ни по какому — команду не даём
--- (команда игры тоже не найдёт героя и уронит игру).
+-- свойства героя, похожие на «тип персонажа»: { имя = значение }
+S.heroTypeProps = function(hero)
+  local out = {}
+  pcall(function()
+    local c, depth = hero:GetClass(), 0
+    while valid(c) and depth < 16 do
+      c:ForEachProperty(function(pr)
+        local n = pr:GetFName():ToString()
+        local cn = ""; pcall(function() cn = pr:GetClass():GetFName():ToString() end)
+        if (cn == "ByteProperty" or cn == "EnumProperty") and S.isTypeParam(n) then
+          local nl = n:lower()
+          if not (nl:find("other") or nl:find("buddy") or nl:find("partner") or nl:find("target")) then
+            local okV, v = pcall(function() return hero[n] end)
+            if okV and type(v) == "number" then out[n] = v end
+          end
+        end
+      end)
+      local oks, sup = pcall(function() return c:GetSuperStruct() end)
+      c = oks and sup or nil; depth = depth + 1
+    end
+  end)
+  return out
+end
+S.otherHero = function(hero)
+  if hero == S.p1 then return S.buddy end
+  if hero == S.buddy then return S.p1 end
+  return nil
+end
 S.resolveHeroType = function(hero, p)
-  local hv, from = S.heroEnumValue(hero, p)
-  local entries = S.enumEntries(p.enum)
-  for _, l in ipairs(S.typeLookups(p.enum)) do
+  S.typeCache = S.typeCache or {}
+  local hn = heroName(hero)
+  if S.typeCache[hn] then return S.typeCache[hn].v, S.typeCache[hn].from end
+  -- 0) значение, которое игра сама передавала этому герою (запомнено)
+  local learned = CFG.learned_types and CFG.learned_types[hn]
+  if type(learned) == "number" then
+    S.typeCache[hn] = { v = learned, from = "игра сама (запомнено)" }
+    return learned, "игра сама (запомнено)"
+  end
+  local info = S.typeDiscover()
+  local function done(v, from)
+    S.typeCache[hn] = { v = v, from = from }
+    return v, from
+  end
+  -- 1) спросить саму игру
+  for _, l in ipairs(info.lookups) do
     local map, relevant, match = {}, false, nil
-    for _, en in ipairs(entries) do
-      local who, called = S.lookupHero(l, en.value, hero)
+    for v = 0, 7 do
+      local who, called = S.lookupHero(l, v, hero)
       if called then
         local h = valid(who) and isHero(who)
         if h then relevant = true end
-        map[#map + 1] = en.name .. "→" .. (h and heroName(who) or (valid(who) and clsName(who) or "пусто"))
-        if who == hero and (match == nil or en.value == hv) then match = en end
+        map[#map + 1] = tostring(v) .. "→" .. (h and heroName(who) or (valid(who) and clsName(who) or "пусто"))
+        if who == hero and match == nil then match = v end
       end
     end
+    trail(string.format("тип героя: %s:%s находит %s", l.owner, l.fn, table.concat(map, ", ")))
     if relevant then
-      local mapText = table.concat(map, ", ")
-      if S.lookupLogged ~= mapText then S.lookupLogged = mapText; trail(string.format("команды напарнику: %s находит: %s", l.fn, mapText)) end
-      if match then
-        if match.value == hv then return hv, (from or "?") .. ", игра подтвердила через " .. l.fn end
-        return match.value, "по " .. l.fn .. " (" .. match.name .. ")" .. (hv ~= nil and (", по имени было " .. tostring(hv)) or "")
-      end
-      trail(string.format("команды напарнику: %s не находит %s ни по одному типу", l.fn, heroName(hero)))
+      if match ~= nil then return done(match, "игра: " .. l.fn) end
+      trail(string.format("тип героя: %s не находит %s ни по одному значению", l.fn, hn))
       return nil
     end
   end
-  return hv, from
+  -- 2) свойство самого героя (если у второго героя оно другое)
+  local mine = S.heroTypeProps(hero)
+  local other = S.otherHero(hero)
+  local theirs = valid(other) and S.heroTypeProps(other) or {}
+  local parts = {}
+  for n, v in pairs(mine) do parts[#parts + 1] = n .. "=" .. tostring(v) .. (theirs[n] ~= nil and (" (у " .. heroName(other) .. " " .. tostring(theirs[n]) .. ")") or "") end
+  if #parts > 0 then trail(string.format("тип героя: свойства %s: %s", hn, table.concat(parts, ", "))) end
+  local best = nil
+  for n, v in pairs(mine) do
+    if theirs[n] == nil or theirs[n] ~= v then
+      local score = (n == p.name and 3) or (n:find(p.name, 1, true) and 2) or 1
+      if not best or score > best.score then best = { n = n, v = v, score = score } end
+    end
+  end
+  if best then return done(best.v, "свойство " .. best.n) end
+  -- 3) перечисление по имени героя
+  local enums = {}
+  if p.enum then enums[#enums + 1] = p.enum end
+  for _, e in ipairs(info.enums) do enums[#enums + 1] = e end
+  table.sort(enums, function(a, b)
+    local ka, kb = S.enumKey(a) or "", S.enumKey(b) or ""
+    local sa = (ka:find(p.name, 1, true) and 2) or (ka:find("CharacterType") and 1) or 0
+    local sb = (kb:find(p.name, 1, true) and 2) or (kb:find("CharacterType") and 1) or 0
+    return sa > sb
+  end)
+  local lhn = hn:lower()
+  for _, e in ipairs(enums) do
+    for _, en in ipairs(S.enumEntries(e)) do
+      local short = en.name:gsub("^.*::", ""):lower()
+      if lhn ~= "" and lhn ~= "?" and short:find(lhn, 1, true) then return done(en.value, "по имени " .. en.name) end
+    end
+  end
+  return nil
+end
+-- Слушаем команды, которые игра сама даёт ИИ-напарнику (когда второй игрок
+-- выключен): из них узнаём тип героя «из первых рук» и запоминаем в настройках.
+S.learnHooks = function()
+  if S.learnHooked then return end
+  S.learnHooked = true
+  local n = 0
+  for group, path in pairs(S.CMD_CLASSES) do
+    local names = {}
+    pcall(function() StaticFindObject(path):ForEachFunction(function(f) names[#names + 1] = f:GetFName():ToString() end) end)
+    for _, fn in ipairs(names) do
+      local sig = S.readSig(path, fn)
+      local at = nil
+      for i, prm in ipairs(sig) do if prm.heroType then at = i end end
+      if at then
+        local ok = pcall(function()
+          RegisterHook(path .. ":" .. fn, function(ctx, ...)
+            if S.inCmd then return end
+            local args = { ... }
+            pcall(S.learnFromGame, fn, args[at])
+          end)
+        end)
+        if ok then n = n + 1 end
+      end
+    end
+  end
+  trail(string.format("тип героя: слушаю команды игры напарнику (%d функций)", n))
+end
+S.learnFromGame = function(fn, param)
+  local v = nil; pcall(function() v = param:get() end)
+  if type(v) ~= "number" then return end
+  -- кому игра даёт команду: герою под ИИ-контроллером
+  local heroesAI = {}
+  for _, ai in ipairs(FindAllOf("KosmosAIController") or {}) do
+    local okp, pawn = pcall(function() return ai.Pawn end)
+    if okp and valid(pawn) and isHero(pawn) then heroesAI[#heroesAI + 1] = pawn end
+  end
+  if #heroesAI ~= 1 then
+    trail(string.format("тип героя: игра дала %s с типом %d, но героев под ИИ %d — не запоминаю", fn, v, #heroesAI))
+    return
+  end
+  local hn = heroName(heroesAI[1])
+  CFG.learned_types = CFG.learned_types or {}
+  if CFG.learned_types[hn] ~= v then
+    CFG.learned_types[hn] = v
+    pcall(saveSettings)
+    S.typeCache = nil
+    trail(string.format("тип героя: игра сама дала %s герою %s с типом %d — запомнил", fn, hn, v))
+  end
 end
 S.cmdSig = {}
 S.cmdCall = function(group, fnName, ...)
@@ -2743,13 +2858,15 @@ S.cmdCall = function(group, fnName, ...)
     return "other"
   end
   local used, args, desc, missing = {}, {}, {}, {}
+  local hasType = false
+  for _, p in ipairs(sig) do if p.heroType then hasType = true end end
   for i, p in ipairs(sig) do
     local v, found = nil, false
     -- тип персонажа — у героя, которому даём команду; наши числа на него не тратим
     if p.heroType then
       local hero = isHero(given[1]) and given[1] or S.buddy
       local hv, from = nil, nil
-      if p.enum then hv, from = S.resolveHeroType(hero, p) end
+      hv, from = S.resolveHeroType(hero, p)
       if hv == nil then
         trail(string.format("команды напарнику: %s — не узнал %s для %s, команду не даю", fnName, p.name, heroName(hero)))
         return nil
@@ -2762,7 +2879,11 @@ S.cmdCall = function(group, fnName, ...)
       v, found = hv, true
     end
     -- «контекст мира» — любой объект уровня; наши значения на него не тратим
-    if not found and p.kind == "object" and (p.name:find("WorldContext") or p.name:find("Context")) then v, found = given[1], true end
+    if not found and p.kind == "object" and (p.name:find("WorldContext") or p.name:find("Context")) then
+      v, found = given[1], true
+      -- герой, которому раньше давали команду, теперь передаётся через контекст и тип
+      if hasType then used[1] = true end
+    end
     -- объект — тот из наших, что подходит по классу параметра
     if not found and p.kind == "object" and p.pcls then
       for j = 1, given.n do
@@ -2793,7 +2914,11 @@ S.cmdCall = function(group, fnName, ...)
   end
   S.argsLogged = S.argsLogged or {}
   if not S.argsLogged[key] then S.argsLogged[key] = true; trail(string.format("команды напарнику: вызываю %s(%s)", fnName, table.concat(desc, ", "))) end
-  return cmds[fnName](cmds, table.unpack(args, 1, #sig))
+  S.inCmd = true
+  local okc, res = pcall(function() return cmds[fnName](cmds, table.unpack(args, 1, #sig)) end)
+  S.inCmd = false
+  if not okc then error(res, 0) end
+  return res
 end
 S.playpalCall = function(fnName, ...) return S.cmdCall("Interactions", fnName, ...) end
 -- При старте кооператива: сверяем число параметров у всех команд, которые
@@ -2817,6 +2942,8 @@ S.checkApi = function()
   else
     trail("команды напарнику: ДРУГАЯ ВЕРСИЯ ИГРЫ — " .. table.concat(diff, "; "))
     pcall(S.apiFingerprint)
+    pcall(S.learnHooks)
+    pcall(S.typeDiscover)
   end
 end
 local function nearestDraggable()
