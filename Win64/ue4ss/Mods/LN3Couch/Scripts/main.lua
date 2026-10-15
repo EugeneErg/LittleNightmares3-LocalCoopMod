@@ -2790,10 +2790,16 @@ S.roleSwapFor = function(hero)
       if okA and okB then done[#done + 1] = { m = m, b = b, k = k } end
     end
   end
+  -- ИИ.Playpal: к этому моменту герой уже передан ИИ, и игра могла сама
+  -- поменять Playpal (на этого героя или на пусто). Нужен этот герой;
+  -- после подсадки вернём героя игрока 2.
   local aiPrev = nil
-  if S.aiPlaypal() == buddy then
-    local okP = pcall(function() S.ai.Playpal = hero end)
-    if okP and S.aiPlaypal() == hero then aiPrev = buddy end
+  if valid(S.ai) then
+    local before = S.aiPlaypal()
+    if before ~= hero then pcall(function() S.ai.Playpal = hero end) end
+    local after = S.aiPlaypal()
+    trail(string.format("роль: ИИ.Playpal был %s, стал %s", valid(before) and heroName(before) or "пусто", valid(after) and heroName(after) or "пусто"))
+    if after == hero then aiPrev = buddy end
   end
   if #done == 0 and not aiPrev then
     trail(string.format("роль: не нашёл, где игра хранит роль «напарник» — подсадку %s не начинаю", heroName(hero)))
