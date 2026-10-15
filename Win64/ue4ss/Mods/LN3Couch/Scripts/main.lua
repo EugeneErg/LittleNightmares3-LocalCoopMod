@@ -4231,6 +4231,7 @@ S.boostTick = function(e1, e2)
       local m = b.hero:GetCurrentMontage()
       if valid(m) and m:GetFName():ToString():find("GiveBoost") then
         b.poseAt = S.frames
+        b.poseT = now()
         local hl, sl = b.hero:K2_GetActorLocation(), b.spot:K2_GetActorLocation()
         trail(string.format("подсадка: %s встал в позу через %.1f с (до места %.0f см)", heroName(b.hero), now() - (b.startT or now()), dist(hl, sl)))
       end
@@ -4258,7 +4259,10 @@ S.boostTick = function(e1, e2)
   local held = true
   -- сразу после передачи героя ИИ игра «забывает» зажатый курок и шлёт 0;
   -- это не отпускание. Удержание засчитываем только после этого момента.
-  if bd or v > 0.35 then if age > 5 then b.sawHeld = true end; b.lowFrames = 0
+  -- v9.15.9 (только для новой версии игры): удержание засчитываем только
+  -- после того, как подсаживающий встал в позу. В новой версии игры курок героя под ИИ то виден, то нет, и
+  -- «увиденный, а потом пропавший» курок отменял подсадку ещё до позы.
+  if bd or v > 0.35 then if age > 5 and (not S.newApi or (b.poseAt and S.frames - b.poseAt > 3)) then b.sawHeld = true end; b.lowFrames = 0
   elseif v > 0.001 and v < 0.25 then b.lowFrames = (b.lowFrames or 0) + 1; if b.lowFrames >= 2 then held = false end
   elseif b.sawHeld then held = false end
   -- отпускание засчитываем, только если кнопку не видно 15 кадров подряд
@@ -4273,6 +4277,16 @@ S.boostTick = function(e1, e2)
     local okm, m = pcall(function() return other:GetCurrentMontage() end)
     local receiving = okm and valid(m) and m:GetFName():ToString():find("ReceiveBoost")
     if not receiving then S.boostEnd("отпустил кнопку") return end
+  end
+  -- не встал в позу за 5 с — отменяем (а не ждём 25 с)
+  if S.newApi and not b.poseAt and b.startT and now() - b.startT > 5 then S.boostEnd("не встал в позу") return end
+  -- в позе, но курок после позы ни разу не виден (новая версия игры): ждём,
+  -- пока второй запрыгнет, но не дольше 8 с
+  if S.newApi and b.poseT and not b.sawHeld and now() - b.poseT > 8 then
+    local other = (b.hero == S.p1) and S.buddy or S.p1
+    local okm, m = pcall(function() return other:GetCurrentMontage() end)
+    local receiving = okm and valid(m) and m:GetFName():ToString():find("ReceiveBoost")
+    if not receiving then S.boostEnd("никто не запрыгнул") return end
   end
   if age > 60 * 25 then S.boostEnd("слишком долго") return end
   if age % 60 == 30 then pcall(function() trail(string.format("враги при подсадке (%.0f с, Low у %s): %s", age / 60, clsName(S.p1.Controller), S.enemyInfo())) end) end
