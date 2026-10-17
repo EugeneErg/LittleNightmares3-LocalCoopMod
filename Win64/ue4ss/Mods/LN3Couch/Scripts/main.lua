@@ -3883,6 +3883,134 @@ S.hookExternalCam = function()
   S.extHookOk = okA
   log(okA and "камера: особые планы перехвачены" or "камера: не удалось перехватить особые планы")
 end
+-- КАМЕРА ИГРОКА 1 И СОБЫТИЯ УРОВНЯ ДЛЯ ГЕРОЯ ИГРОКА 2. Скрипты уровня
+-- написаны для одного игрока: «герой игрока зашёл в триггер — меняем камеру
+-- игрока» (SetViewOverTime/ResetViewOverTime у менеджера камеры номер 0 и
+-- «вид» камеры комнаты — её дальний план). Какой герой «игрок», игра решает
+-- так: напарник — тот, кем управляет ИИ. В кооперативе ИИ нет ни у кого, и
+-- такие события срабатывают и на героя игрока 2 — а меняют камеру игрока 1
+-- (так на уступе в переулке камера игрока 1 уходила на дальний план и больше
+-- не ехала за Low). Правило: команды камере игрока 1, отданные в событии
+-- уровня, которое вызвал герой игрока 2, к камере игрока 1 не применяются —
+-- мод возвращает её как было. События мира (двери, обвалы) не трогаем.
+-- Как узнаём: перехват команд менеджера камеры (перед выполнением) кладёт их
+-- «в ожидание» с номером кадра, а перехват событий скриптов уровня (после
+-- выполнения) смотрит, чей герой в параметрах события: игрока 2 — откатываем
+-- команды этого кадра, иначе — оставляем.
+S.evCam = { pend = {}, views = {}, cams = {}, camsAt = -100000, forced = nil, hooked = {}, cmdOk = false, pinned = {} }
+do
+local EC = S.evCam
+EC.readView = function(c) local v = nil; pcall(function() v = c.mCurrentViewValue end); return v end
+-- «вид» камер комнат на прошлом кадре — чтобы было к чему вернуть
+EC.tick = function()
+  if not (S.coop and valid(S.pc1)) then EC.pend = {}; EC.pinned = {}; return end
+  if S.frames - EC.camsAt > 120 then
+    EC.camsAt = S.frames
+    EC.cams = {}
+    for _, c in ipairs(FindAllOf("DollhouseCameraActor") or {}) do if valid(c) then EC.cams[#EC.cams + 1] = c end end
+  end
+  -- команды, которые не попали ни в одно событие героя игрока 2, — оставляем
+  for i = #EC.pend, 1, -1 do
+    local e = EC.pend[i]
+    if e.frame < S.frames then EC.commit(e); table.remove(EC.pend, i) end
+  end
+  -- «вид», возвращённый после события игрока 2, держим, пока скрипт его докручивает
+  for k, p in pairs(EC.pinned) do
+    if S.frames > p.untilF or not valid(p.cam) then EC.pinned[k] = nil
+    else pcall(function() if p.cam.mCurrentViewValue ~= p.value then p.cam.mCurrentViewValue = p.value end end) end
+  end
+  for i, c in ipairs(EC.cams) do
+    if valid(c) then EC.views[c:GetFullName()] = EC.readView(c) end
+  end
+end
+EC.commit = function(e)
+  if e.kind == "set" then EC.forced = e.cam elseif e.kind == "reset" then EC.forced = nil end
+end
+-- откат команд этого кадра: вернуть «вид» камер и выбор камеры у менеджера
+EC.undo = function(who)
+  local cm = S.pc1.PlayerCameraManager
+  local names = {}
+  for _, e in ipairs(EC.pend) do
+    if e.frame == S.frames then
+      if valid(e.cam) then names[#names + 1] = e.cam:GetFName():ToString() end
+      e.undone = true
+    end
+  end
+  if #names == 0 then return end
+  for _, c in ipairs(EC.cams) do
+    pcall(function()
+      if not valid(c) then return end
+      local key = c:GetFullName()
+      local old, now = EC.views[key], EC.readView(c)
+      if old ~= nil and now ~= nil and now ~= old then
+        c.mCurrentViewValue = old
+        EC.pinned[key] = { cam = c, value = old, untilF = S.frames + 60 * (CFG.p2_event_cam_pin_s or 12) }
+      end
+    end)
+  end
+  S.camSelf = true
+  if valid(EC.forced) then
+    local f = EC.forced
+    pcall(function() cm:SetViewOverTime(f, 0.3, 0) end)
+  else
+    pcall(function() cm:ResetViewOverTime(0.3, 0) end)
+  end
+  S.camSelf = false
+  local keep = {}
+  for _, e in ipairs(EC.pend) do if not e.undone then keep[#keep + 1] = e end end
+  EC.pend = keep
+  trail(string.format("камера 1: событие уровня от героя игрока 2 (%s) меняло камеру игрока 1 (%s) — вернул как было", who, table.concat(names, ", ")))
+end
+EC.hookCmds = function()
+  if EC.cmdOk then return end
+  EC.cmdOk = true
+  local base = "/Script/CameraSystemRuntime.CameraManager:"
+  for _, fn in ipairs({ "SetViewOverTime", "ResetViewOverTime" }) do
+    pcall(function()
+      RegisterHook(base .. fn, function(ctx, camP)
+        if S.camSelf or not S.coop or CFG.p2_event_cam == false then return end
+        pcall(function()
+          local cm = ctx:get()
+          if not (valid(S.pc1) and cm == S.pc1.PlayerCameraManager) then return end
+          local cam = nil
+          if fn == "SetViewOverTime" then pcall(function() cam = camP:get() end) end
+          EC.pend[#EC.pend + 1] = { frame = S.frames, kind = (fn == "SetViewOverTime") and "set" or "reset", cam = cam }
+        end)
+      end)
+    end)
+  end
+end
+-- события скриптов уровня: кто их вызвал (герой в параметрах события)
+EC.hookLevelEvents = function()
+  for _, a in ipairs(FindAllOf("LevelScriptActor") or {}) do
+    pcall(function()
+      -- после перезагрузки уровня класс скрипта новый — ключ с адресом
+      local c = a:GetClass()
+      local key = c:GetFName():ToString() .. "@" .. tostring(c:GetAddress())
+      if EC.hooked[key] then return end
+      EC.hooked[key] = true
+      c:ForEachFunction(function(f)
+        pcall(function()
+          local fname = f:GetFName():ToString()
+          if not fname:find("^BndEvt") then return end
+          local path = f:GetFullName():match("^%S+%s+(.+)$")
+          RegisterHook(path, function(ctx, ...)
+            if not S.coop or #EC.pend == 0 then return end
+            local p2, p1 = false, false
+            for _, prm in ipairs({ ... }) do
+              pcall(function()
+                local v = prm:get()
+                if v == S.buddy then p2 = true elseif v == S.p1 then p1 = true end
+              end)
+            end
+            if p2 and not p1 then pcall(EC.undo, heroName(S.buddy)) end
+          end)
+        end)
+      end)
+    end)
+  end
+end
+end
 -- ВРАГИ И ИГРОК 2. Игра даёт врагам ловить только героя игрока 1: напарника
 -- (в одиночной игре это ИИ) они лишь преследуют. Поэтому, если враг вплотную
 -- подбежал к герою игрока 2, мод сам говорит врагу «поймал» — дальше игра
@@ -5542,6 +5670,11 @@ local function Tick()
   if S.detect then try("detectTick", detectTick) end
   try("pauseTick", pauseTick)
   try("uiDump", S.uiDumpTick)
+  if S.coop then
+    if not S.evCam.cmdOk then pcall(S.evCam.hookCmds) end
+    if S.frames % 300 == 120 then pcall(S.evCam.hookLevelEvents) end
+    pcall(S.evCam.tick)
+  end
   if S.frames % 60 == 45 then try("words", S.harvestWords) end
   if not S.menuOpen then try("captureTick", captureTick) end
   if S.menuOpen then
