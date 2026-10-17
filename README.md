@@ -84,7 +84,7 @@ Everything is in the **Co-op** menu (main menu, pause menu or **F9**):
 | Split | Auto (by where the heroes are) / Horizontal / Vertical / Always horizontal / Always vertical |
 | Player 2 buttons | remap Player 2's controls |
 
-Settings are stored in `ue4ss\Mods\LN3Couch\settings.lua`.
+Settings are stored in `ue4ss\Mods\LN3Couch\settings.lua`. The mod creates it the first time you change a setting; defaults come from `Scripts\config.lua`. Updating the mod keeps your settings.
 
 ## How it works
 
@@ -100,6 +100,7 @@ After:   Player 1 ─ PlayerController 1 ─ hero 1
 
 - A second local player is created inside the running game and takes over the companion hero. From then on the game's own input, abilities and interactions work for Player 2.
 - Split screen uses the engine's native two-player viewports. To put each player on their own side, the mod orders the two local players so the engine draws them in the right halves. Gamepads stay with their players.
+- In the level with two overlaid worlds, the game composites the second world inside the doll's light correctly only into the half drawn first (left/top). The holder of the doll goes first, and a small native helper (`ue4ss/Mods/LN3Couch/native/ln3couch_tw.dll`, source next to it) composites the second world only there and swaps where the finished halves are shown, so each player still sees their half on their side.
 - On the shared screen, Player 2's hero is added to the game camera as a point of interest, so the camera's own logic frames both players.
 - Player 2's split-screen camera reproduces the game's room cameras: the hero's position in the room maps to the camera's position, with the designer-set angles and limits.
 - For boosts the mod briefly hands the giving hero to the game's AI, which knows how to perform the boost, and gives it back as soon as the boost ends.
