@@ -1,4 +1,4 @@
--- LN3Couch v9.15.8 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.15.9 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -1696,6 +1696,7 @@ local function updateSplit()
   end
   setSplitVisible(want)
   pcall(S.applySplitAspect, want)
+  pcall(S.extOnSplit, want)
   if not want then S.splitLR, S.p2First = nil, false; S.cam2External = nil end
   log(want and "экран разделён" or "экран общий")
   -- для разбора пропажи звука: состояние звука сразу и через 2 и 6 с
@@ -5341,6 +5342,44 @@ S.extSubject = function(cam)
   local aL, aA = ang(S.p1), ang(S.buddy)
   return aA < aL, aL, aA
 end
+-- чей особый план: у Alone — отдаём второй половине, у игрока 1 снимаем
+-- (стоп откладывается, если план только начинается: run(f) выполняет f)
+S.extDecide = function(cm, cam, ease, run)
+  local ok, alone, aL, aA = pcall(S.extSubject, cam)
+  local nm = ""; pcall(function() nm = cam:GetFName():ToString() end)
+  if not (ok and alone) then
+    trail(string.format("камера 1: особый план %s — для Low (Low %.0f°, Alone %.0f° от взгляда), оставил", nm, aL or -1, aA or -1))
+    return false
+  end
+  S.cam2External = cam; S.camSnap = true; RC.pickAt = 0
+  trail(string.format("камера 1: особый план %s — для Alone (Low %.0f°, Alone %.0f° от взгляда): отдал второй половине, у игрока 1 отменил", nm, aL, aA))
+  run(function()
+    S.camSelf = true
+    pcall(function() cm:StopExternalOverTime(0.3, ease) end)
+    S.camSelf = false
+  end)
+  return true
+end
+-- v9.15.9: ОСОБЫЙ ПЛАН, НАЧАТЫЙ НА ОБЩЕМ ЭКРАНЕ. На общем экране план игры
+-- (ворот, рычаг) видят оба — его не трогаем. Но если экран потом разделится,
+-- а план идёт для Alone (она крутит ворот), у игрока 1 оставалась камера
+-- плана: Low уходил из кадра, и обе половины показывали Alone. Поэтому при
+-- разделении решаем, чей идущий план, как при его начале на разделённом
+-- экране; при объединении возвращаем его игроку 1, если игра его не закончила.
+S.extOnSplit = function(on)
+  local e = S.cam1Ext
+  if not (S.coop and e and valid(e.cam) and valid(S.pc1)) then S.cam1Ext = (e and valid(e.cam)) and e or nil; return end
+  local cm = S.pc1.PlayerCameraManager
+  if on then
+    if CFG.split_ext_to_p2 == false or S.cam2External == e.cam then return end
+    S.extDecide(cm, e.cam, e.ease, function(f) f() end)
+  elseif S.cam2External == e.cam then
+    S.camSelf = true
+    pcall(function() cm:StartExternalOverTime(e.cam, 0.3, e.ease) end)
+    S.camSelf = false
+    trail("камера 1: экран общий — особый план, отданный второй половине, снова у обоих")
+  end
+end
 S.hookExternalCam = function()
   if S.extHookOk then return end
   local base = "/Script/CameraSystemRuntime.CameraManager:"
@@ -5351,27 +5390,20 @@ S.hookExternalCam = function()
       pcall(function() cm = ctx:get() end)
       pcall(function() cam = camP:get() end)
       pcall(function() ease = easeP:get() end)
-      if not (S.coop and S.split and CFG.split_ext_to_p2 ~= false and valid(cm) and valid(S.pc1) and cm == S.pc1.PlayerCameraManager and valid(cam)) then return end
-      local ok, alone, aL, aA = pcall(S.extSubject, cam)
-      local nm = ""; pcall(function() nm = cam:GetFName():ToString() end)
-      if not (ok and alone) then
-        trail(string.format("камера 1: особый план %s — для Low (Low %.0f°, Alone %.0f° от взгляда), оставил", nm, aL or -1, aA or -1))
-        return
-      end
-      S.cam2External = cam; S.camSnap = true; RC.pickAt = 0
-      trail(string.format("камера 1: особый план %s — для Alone (Low %.0f°, Alone %.0f° от взгляда): отдал второй половине, у игрока 1 отменил", nm, aL, aA))
-      local function undo()
-        S.camSelf = true
-        pcall(function() cm:StopExternalOverTime(0.3, ease) end)
-        S.camSelf = false
-      end
-      if ExecuteWithDelay then ExecuteWithDelay(30, function() ExecuteInGameThread(undo) end) else undo() end
+      if not (S.coop and valid(cm) and valid(S.pc1) and cm == S.pc1.PlayerCameraManager and valid(cam)) then return end
+      -- v9.15.9: план, начатый на общем экране, помним — если потом экран
+      -- разделится, решаем, чей он (S.extOnSplit)
+      S.cam1Ext = { cam = cam, ease = ease }
+      if not (S.split and CFG.split_ext_to_p2 ~= false) then return end
+      local function later(f) if ExecuteWithDelay then ExecuteWithDelay(30, function() ExecuteInGameThread(f) end) else f() end end
+      S.extDecide(cm, cam, ease, later)
     end)
   end)
   pcall(function()
     RegisterHook(base .. "StopExternalOverTime", function(ctx)
       if S.camSelf then return end
       local cm = nil; pcall(function() cm = ctx:get() end)
+      if valid(S.pc1) and cm == S.pc1.PlayerCameraManager then S.cam1Ext = nil end
       if valid(S.pc1) and cm == S.pc1.PlayerCameraManager and S.cam2External then
         -- игра сама закончила план — второй возвращается к своей комнате
         S.cam2External = nil; RC.pickAt = 0; S.camSnap = true
@@ -7359,4 +7391,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.15.8 загружен. F9 — меню кооператива")
+log("v9.15.9 загружен. F9 — меню кооператива")
