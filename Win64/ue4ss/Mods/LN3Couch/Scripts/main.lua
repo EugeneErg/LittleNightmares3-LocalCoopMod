@@ -4301,9 +4301,61 @@ S.halo.tick = function()
   S.halo.dollL = { X = l.X, Y = l.Y, Z = l.Z }
   S.halo.on = true
 end
+-- v9.15.7: ОРЕОЛ В РАЗДЕЛЁННОМ ЭКРАНЕ. Свой ореол (второй мир в сфере света
+-- куклы) игра верно рисует только в половине, что лежит в начале кадра
+-- (слева/сверху), — в другой половине выходил кусок чужой картинки.
+-- Библиотека native/ln3couch_tw.dll (исходник и сборка — в native/) делает
+-- две вещи по метке основной съёмки второго мира (SphereMarginConstant):
+-- вклеивает второй мир только в первую половину и, если нужно, меняет местами
+-- места вывода половин на экране. Нет библиотеки или two_worlds_native = false
+-- — всё как раньше.
+S.tw2 = {}
+pcall(function()
+  if CFG.two_worlds_native == false or not package or not package.loadlib then return end
+  local path = "ue4ss/Mods/LN3Couch/native/ln3couch_tw.dll"
+  local f = io.open(path, "rb"); if not f then return end
+  f:close()
+  local ok, err = package.loadlib(path, "*")
+  S.tw2.native = ok and true or false
+  log("второй мир: библиотека %s", ok and "загружена" or ("не загружена: " .. tostring(err)))
+end)
+-- РИСУЕМ СЛЕВА, ПОКАЗЫВАЕМ ПО МЕСТУ:
+-- держащий куклу рисуется первым — в начале буфера кадра (слева/сверху), где
+-- игра свой ореол рисует верно. Если по положению героев его половине место
+-- справа/снизу, библиотека меняет местами только места вывода готовых
+-- половин. Метка для библиотеки у основной съёмки: 0.5625 — поменять
+-- слева/справа, 0.625 — сверху/снизу, 0.25 — не менять.
+S.out = { on = false }
+S.out.wanted = function()
+  return S.tw2.native and S.twoWorlds() and S.split
+end
+S.out.tick = function(c)
+  local O = S.out
+  if not O.on then
+    O.on = true
+    O.cn = c.SphereMarginConstant
+    trail("вывод половин: держащий куклу рисуется первым, на экран — по месту героев")
+  end
+  local swap = S.p2Geo ~= nil and (S.p2First or false) ~= (S.p2Geo or false)
+  local mk = swap and (S.splitLR and 0.5625 or 0.625) or 0.25
+  if O.mk ~= mk then
+    O.mk = mk
+    trail(string.format("вывод половин: %s (первым рисуется %s, по месту первым — %s)", swap and "меняю местами" or "как нарисованы",
+      S.p2First and "второй" or "первый", S.p2Geo and "второй" or "первый"))
+  end
+  pcall(function() c.SphereMarginConstant = mk end)
+end
+S.out.stop = function()
+  local O = S.out
+  if not O.on then return end
+  O.on, O.mk = false, nil
+  pcall(function() if valid(S.twc.cap) then S.twc.cap.SphereMarginConstant = O.cn or 0 end end)
+  trail("вывод половин: выключено")
+end
 S.twcTick = function()
   -- v9.15.7: только в двух мирах (кукла рядом) и на разделённом экране;
   -- в settings.lua two_worlds_p2 = false выключает
+  if not (S.twoWorlds() and S.split and CFG.two_worlds_p2 ~= false) then pcall(S.out.stop) end
   if not S.twoWorlds() or CFG.two_worlds_p2 == false then
     S.halo.on, S.halo.dollL = false, nil
     if S.twc.on then
@@ -4358,6 +4410,7 @@ S.twcTick = function()
   end
   local c = S.twc.cap
   if not valid(c) then S.twc.on = false; return end
+  if S.out.wanted() then S.out.tick(c) else S.out.stop() end
   S.twcApply()
   if S.twc.manual then pcall(function() c:CaptureScene() end) end
 end
