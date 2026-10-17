@@ -1,4 +1,4 @@
--- LN3Couch v9.15.7 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.15.8 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -102,7 +102,25 @@ local S = {
   drawSeen = false,
 }
 local TICKS = 0
-local function now() return TICKS / 60 end
+-- v9.15.7: время в секундах — настоящее (по часам игры), а не «кадры / 60»:
+-- мод получает не 60 тактов в секунду, а сколько успевает игра (в тяжёлых
+-- местах около 25–30), и всё, что считалось «секундами» по тактам, шло вдвое
+-- медленнее (подсадка начиналась через 0,8 с вместо 0,4).
+S.nowt = { tick = -1, t = 0, real = nil, base = 0 }
+local function now()
+  if S.nowt.tick == TICKS then return S.nowt.t end
+  local okr, rt = pcall(function() return UEHelpers.GetGameplayStatics():GetRealTimeSeconds(UEHelpers.GetWorld()) end)
+  if okr and type(rt) == "number" and rt > 0 then
+    -- часы игры идут с загрузки уровня — сшиваем, чтобы время только росло
+    if S.nowt.real == nil or rt < S.nowt.real then S.nowt.base = S.nowt.t - rt + (S.nowt.real and 1 / 60 or 0) end
+    S.nowt.real = rt
+    S.nowt.t = S.nowt.base + rt
+  else
+    S.nowt.t = S.nowt.t + math.max(0, TICKS - S.nowt.tick) / 60
+  end
+  S.nowt.tick = TICKS
+  return S.nowt.t
+end
 local suspendCoop -- объявлено заранее, задаётся ниже -- «секунды» по нашему циклу (~60 раз в секунду)
 
 ------------------------------------------------------------------ ввод
@@ -1772,7 +1790,7 @@ S.EN = {
   ["Геймпад игрока 2 не отвечает — проверьте подключение"] = "Player 2's gamepad is not responding — check the connection",
   ["Не нашёл двух героев — загрузите игру"] = "Couldn't find both heroes — load a game first",
   ["Игрок 2 подключён"] = "Player 2 joined",
-  ["Игра будет вдвоём"] = "The game will be two-player", ["Сначала уберите вещь из рук"] = "Put the item away first", ["Игра будет на одного"] = "The game will be single-player",
+  ["Игра будет вдвоём"] = "The game will be two-player", ["Сначала уберите вещь из рук"] = "Put the item away first", ["Подсадить может только второй игрок"] = "Only Player 2 can give the boost", ["Игра будет на одного"] = "The game will be single-player",
   ["Напарником снова управляет ИИ"] = "The AI controls the companion again",
   ["Настройки сброшены"] = "Settings reset",
   ["Назначено"] = "Assigned",
@@ -2383,7 +2401,9 @@ end
 
 local function setCoop(on)
   if on == S.coop then return end
+  if not on then pcall(function() S.roleRestore() end) end
   if on then
+    pcall(function() S.checkApi() end)
     applyGamepadRouting()
     -- v9.15.7: счёт кадров при возобновлении больше не обнуляем. Многое
     -- запоминает «в каком кадре» (кэши двух миров, куклы, наложенных копий,
@@ -2628,11 +2648,11 @@ end
 local function tryPickupOrPutdown()
   local held = heldItem()
   if held then
-    return runCmd("положить", function() return carryCmds():PlaypalCarriable_Putdown(S.buddy, false, { X = 0, Y = 0, Z = 0 }) end)
+    return runCmd("положить", function() return S.cmdCall("Carriable", "PlaypalCarriable_Putdown", S.buddy, false, { X = 0, Y = 0, Z = 0 }) end)
   end
   local c, d = nearestCarriable()
   if c then
-    return runCmd(string.format("поднять (%.0f см)", d), function() return carryCmds():PlaypalCarriable_Pickup(S.buddy, c) end)
+    return runCmd(string.format("поднять (%.0f см)", d), function() return S.cmdCall("Carriable", "PlaypalCarriable_Pickup", S.buddy, c) end)
   end
   return false
 end
@@ -2694,7 +2714,7 @@ local function tryThrow()
   if not okp then log("бросок: не удалось посчитать направление: %s", tostring(stand)); return end
   local sm, tm = placeMarker("throwStand", stand), placeMarker("throwTarget", target)
   if not (valid(sm) and valid(tm)) then log("бросок: метки не создались"); return end
-  runCmd("бросить", function() return carryCmds():PlaypalCarriable_Throw(S.buddy, sm, tm) end)
+  runCmd("бросить", function() return S.cmdCall("Carriable", "PlaypalCarriable_Throw", S.buddy, sm, tm) end)
   S.throwCheck = { at = S.frames + 75, target = target }
 end
 local function throwCheckTick()
@@ -2767,7 +2787,7 @@ local function tryWeapon()
   if not valid(tm) then tm = placeMarker("weapTarget", target) end
   if not (valid(sm) and valid(tm)) then return false end
   return runCmd(isLow and "выстрелить из лука" or "ударить ключом", function()
-    return weaponCmds():PlaypalWeaponAttack(S.buddy, sm, stand, tm, target, false, 1, 60)
+    return S.cmdCall("WeaponTools", "PlaypalWeaponAttack", S.buddy, sm, stand, tm, target, false, 1, 60)
   end)
 end
 
@@ -2787,6 +2807,759 @@ end
 local function interactCmds()
   if not valid(CARRY.icmds) then CARRY.icmds = StaticFindObject("/Script/Kosmos.Default__KosmosPlaypalCommandsInteractions") end
   return CARRY.icmds
+end
+-- v9.15.7: КОМАНДЫ НАПАРНИКУ ПРИ ДРУГОЙ ВЕРСИИ ИГРЫ. В обновлённой игре у
+-- команд (подсадка, ящики) появился ещё один параметр, и вызов с прежним
+-- набором падал («UFunction expected 3 parameters, received 2») — подсадка
+-- у таких игроков не работала совсем. Теперь параметры берём у самой
+-- функции игры: наши значения раскладываем по параметрам того же вида (объект,
+-- число, флаг, структура) в прежнем порядке, недостающим даём значение по
+-- умолчанию. Если набор параметров не такой, как мы знаем, пишем его в лог.
+-- v9.15.8: ТИП ПЕРСОНАЖА В КОМАНДАХ. В новой версии игры подсадка получает не
+-- героя, а «тип персонажа» (CompanionCharacterType, перечисление), и по нему
+-- игра сама ищет героя. Мы подставляли 0 — игра не находила героя и падала.
+-- Теперь тип ищем по имени героя среди значений перечисления (Low, Alone,
+-- Dime…), а если не нашли — в свойстве самого героя того же перечисления
+-- (кроме свойств «про другого»: Companion, Other, Buddy…). Если тип узнать
+-- не удалось, команду НЕ вызываем (лучше без подсадки, чем вылет).
+S.enumKey = function(e)
+  local ok, n = pcall(function() return e:GetFullName() end)
+  return ok and n or nil
+end
+S.enumEntries = function(e)
+  local out = {}
+  pcall(function()
+    e:ForEachName(function(name, value)
+      local s = ""; pcall(function() s = name:ToString() end)
+      out[#out + 1] = { name = s, value = value }
+    end)
+  end)
+  return out
+end
+-- Общий переходник для команд напарнику (подсадка, ящики, переноска, оружие):
+-- если у функции игры столько же параметров, сколько передаём мы (версия
+-- игры, под которую сделан мод), вызываем как есть. Иначе раскладываем наши
+-- значения по параметрам функции этой версии игры.
+S.CMD_CLASSES = {
+  Interactions = "/Script/Kosmos.KosmosPlaypalCommandsInteractions",
+  Carriable    = "/Script/Kosmos.KosmosPlaypalCommandsCarriable",
+  WeaponTools  = "/Script/Kosmos.KosmosPlaypalCommandsWeaponTools",
+}
+S.cmdObj = function(group)
+  if group == "Interactions" then return interactCmds() end
+  if group == "Carriable" then return carryCmds() end
+  if group == "WeaponTools" then return weaponCmds() end
+end
+S.propKind = function(cn)
+  if cn:find("Object") or cn:find("Class") or cn:find("Interface") then return "object"
+  elseif cn == "BoolProperty" then return "bool"
+  elseif cn:find("Int") or cn == "FloatProperty" or cn == "DoubleProperty" or cn == "ByteProperty" or cn == "EnumProperty" then return "number"
+  elseif cn == "StructProperty" then return "struct"
+  elseif cn == "NameProperty" then return "name" end
+  return "other"
+end
+-- перечисление параметра: у самого параметра, а если не отдаёт — по имени
+S.propEnum = function(pr, n, cn)
+  if not (cn == "ByteProperty" or cn == "EnumProperty") then return nil end
+  local okE, e = pcall(function() return pr:GetEnum() end)
+  if okE and e then
+    local okv, v = pcall(function() return e:IsValid() end)
+    if not okv or v then return e end
+  end
+  local base = n:gsub("^In", ""):gsub("^New", "")
+  for _, cand in ipairs({ "E" .. base, "EKosmos" .. base, "E" .. base .. "s" }) do
+    local okf, f = pcall(function() return StaticFindObject("/Script/Kosmos." .. cand) end)
+    if okf and valid(f) then return f end
+  end
+  return nil
+end
+S.readSig = function(classPath, fnName)
+  local sig, ret = {}, nil
+  pcall(function()
+    StaticFindObject(classPath .. ":" .. fnName):ForEachProperty(function(pr)
+      local n = pr:GetFName():ToString()
+      local cn = ""; pcall(function() cn = pr:GetClass():GetFName():ToString() end)
+      if n == "ReturnValue" then ret = cn; return end
+      local kind = S.propKind(cn)
+      local pcls = nil
+      if kind == "object" then pcall(function() pcls = pr:GetPropertyClass() end) end
+      local enum = S.propEnum(pr, n, cn)
+      sig[#sig + 1] = { name = n, cls = cn, kind = kind, pcls = pcls, enum = enum,
+        heroType = (cn == "ByteProperty" or cn == "EnumProperty") and S.isTypeParam(n) }
+    end)
+  end)
+  return sig, ret
+end
+S.sigText = function(sig)
+  local d = {}
+  for _, p in ipairs(sig) do d[#d + 1] = p.name .. ":" .. p.cls end
+  return table.concat(d, ", ")
+end
+S.enumText = function(e)
+  local parts = {}
+  for _, en in ipairs(S.enumEntries(e)) do parts[#parts + 1] = en.name .. "=" .. tostring(en.value) end
+  return #parts > 0 and table.concat(parts, ", ") or "значения не прочитались"
+end
+-- Снимок «API» команд напарнику этой версии игры — один раз за запуск, в
+-- trail.txt. По нему видно, чем версия игры игрока отличается от нашей.
+S.apiFingerprint = function()
+  if S.apiDone then return end
+  S.apiDone = true
+  local enums = {}
+  for group, path in pairs(S.CMD_CLASSES) do
+    local names = {}
+    pcall(function()
+      StaticFindObject(path):ForEachFunction(function(f) names[#names + 1] = f:GetFName():ToString() end)
+    end)
+    table.sort(names)
+    trail(string.format("API %s: %d функций", group, #names))
+    for _, fn in ipairs(names) do
+      local sig, ret = S.readSig(path, fn)
+      trail(string.format("API   %s(%s)%s", fn, S.sigText(sig), ret and (" -> " .. ret) or ""))
+      for _, p in ipairs(sig) do
+        local k = p.enum and S.enumKey(p.enum)
+        if k and not enums[k] then enums[k] = true; trail(string.format("API   перечисление %s: %s", k, S.enumText(p.enum))) end
+      end
+    end
+  end
+end
+-- ТИП ПЕРСОНАЖА (CompanionCharacterType) В НОВОЙ ВЕРСИИ ИГРЫ. Параметр —
+-- байт, и UE4SS не всегда отдаёт его перечисление, поэтому тип ищем тремя
+-- путями (раз за запуск, всё пишем в trail.txt):
+--  1) функции игры Get…/Find…(…CharacterType) -> объект: перебираем значения
+--     и смотрим, по какому игра возвращает нашего героя — это ответ самой игры;
+--  2) свойство героя …CharacterType (берём, только если у героев оно разное);
+--  3) перечисления игры с Companion/CharacterType в имени — по имени героя.
+S.isTypeParam = function(n) return n:find("CharacterType") ~= nil or n:find("CompanionType") ~= nil end
+S.fnSig = function(f)
+  local sig, ret = {}, nil
+  pcall(function()
+    f:ForEachProperty(function(pr)
+      local n = pr:GetFName():ToString()
+      local cn = ""; pcall(function() cn = pr:GetClass():GetFName():ToString() end)
+      if n == "ReturnValue" then ret = cn; return end
+      sig[#sig + 1] = { name = n, cls = cn, kind = S.propKind(cn) }
+    end)
+  end)
+  return sig, ret
+end
+S.typeDiscover = function()
+  if S.typeInfo then return S.typeInfo end
+  local info = { enums = {}, lookups = {}, fns = {} }
+  S.typeInfo = info
+  pcall(function()
+    ForEachUObject(function(o)
+      pcall(function()
+        local cn = o:GetClass():GetFName():ToString()
+        if cn == "Enum" or cn == "UserDefinedEnum" then
+          local n = o:GetFName():ToString()
+          if n:find("Companion") or n:find("CharacterType") or n:find("Playpal") then info.enums[#info.enums + 1] = o end
+        elseif cn == "Function" then
+          local full = o:GetFullName()
+          if full:find("/Script/Kosmos%.") then
+            local has = false
+            o:ForEachProperty(function(pr) if S.isTypeParam(pr:GetFName():ToString()) then has = true end end)
+            if has then info.fns[#info.fns + 1] = o end
+          end
+        end
+      end)
+    end)
+  end)
+  for _, e in ipairs(info.enums) do
+    trail(string.format("тип героя: перечисление %s: %s", S.enumKey(e) or "?", S.enumText(e)))
+  end
+  for _, f in ipairs(info.fns) do
+    local fn = f:GetFName():ToString()
+    local owner = ""; pcall(function() owner = f:GetOuter():GetFName():ToString() end)
+    local sig, ret = S.fnSig(f)
+    if not fn:find("^Playpal") then
+      trail(string.format("тип героя: функция %s:%s(%s)%s", owner, fn, S.sigText(sig), ret and (" -> " .. ret) or ""))
+    end
+    -- годится для проверки: Get…/Find…, возвращает объект, параметры — только
+    -- контекст (объект) и один тип
+    if (fn:find("^Get") or fn:find("^Find")) and ret and S.propKind(ret) == "object" then
+      local typeAt, ok = nil, true
+      for i, p in ipairs(sig) do
+        if S.isTypeParam(p.name) and (p.kind == "number") then
+          if typeAt then ok = false else typeAt = i end
+        elseif not (p.kind == "object" and p.name:find("Context")) then ok = false end
+      end
+      if ok and typeAt then
+        info.lookups[#info.lookups + 1] = { fn = fn, owner = owner, sig = sig, typeAt = typeAt }
+      end
+    end
+  end
+  local d = {}
+  for _, l in ipairs(info.lookups) do d[#d + 1] = l.owner .. ":" .. l.fn end
+  trail(string.format("тип героя: функций проверки %d%s", #d, #d > 0 and (" — " .. table.concat(d, ", ")) or ""))
+  return info
+end
+-- объект, у которого вызывать функцию проверки: живой экземпляр класса или CDO
+S.lookupOwner = function(l)
+  local o = nil
+  pcall(function() o = FindFirstOf(l.owner) end)
+  if valid(o) then return o end
+  pcall(function() o = StaticFindObject("/Script/Kosmos.Default__" .. l.owner) end)
+  if valid(o) then return o end
+  return nil
+end
+S.lookupHero = function(l, value, ctx)
+  local obj = S.lookupOwner(l)
+  if not obj then return nil, false end
+  local args = {}
+  for i = 1, #l.sig do args[i] = (i == l.typeAt) and value or ctx end
+  local ok, r = pcall(function() return obj[l.fn](obj, table.unpack(args, 1, #l.sig)) end)
+  if not ok then return nil, false end
+  return valid(r) and r or nil, true
+end
+-- свойства героя, похожие на «тип персонажа»: { имя = значение }
+S.heroTypeProps = function(hero)
+  local out = {}
+  pcall(function()
+    local c, depth = hero:GetClass(), 0
+    while valid(c) and depth < 16 do
+      c:ForEachProperty(function(pr)
+        local n = pr:GetFName():ToString()
+        local cn = ""; pcall(function() cn = pr:GetClass():GetFName():ToString() end)
+        if (cn == "ByteProperty" or cn == "EnumProperty") and S.isTypeParam(n) then
+          local nl = n:lower()
+          if not (nl:find("other") or nl:find("buddy") or nl:find("partner") or nl:find("target")) then
+            local okV, v = pcall(function() return hero[n] end)
+            if okV and type(v) == "number" then out[n] = v end
+          end
+        end
+      end)
+      local oks, sup = pcall(function() return c:GetSuperStruct() end)
+      c = oks and sup or nil; depth = depth + 1
+    end
+  end)
+  return out
+end
+S.otherHero = function(hero)
+  if hero == S.p1 then return S.buddy end
+  if hero == S.buddy then return S.p1 end
+  return nil
+end
+-- РОЛЬ «НАПАРНИК-БОТ». В новой версии тип — это EKosmosCompanionCharacter:
+-- Companion_Playpal (бот-напарник), Companion01… Игра сама передаёт
+-- Companion_Playpal для Alone. Значение этой роли:
+S.playpalValue = function()
+  local learned = CFG.learned_types and valid(S.buddy) and CFG.learned_types[heroName(S.buddy)]
+  if type(learned) == "number" then return learned, "игра сама (запомнено)" end
+  local info = S.typeDiscover()
+  for _, e in ipairs(info.enums) do
+    if (S.enumKey(e) or ""):find("CompanionCharacter") then
+      for _, en in ipairs(S.enumEntries(e)) do
+        if en.name:gsub("^.*::", "") == "Companion_Playpal" then return en.value, "роль " .. en.name end
+      end
+    end
+  end
+  return nil
+end
+-- Где игра хранит роль героя: свойства-перечисления CompanionCharacter у
+-- самого героя и у его компонентов. { ключ = { obj, name, value } }
+S.roleSites = function(actor)
+  local out = {}
+  local function scan(obj, prefix)
+    pcall(function()
+      local c, depth = obj:GetClass(), 0
+      while valid(c) and depth < 16 do
+        c:ForEachProperty(function(pr)
+          local n = pr:GetFName():ToString()
+          local cn = ""; pcall(function() cn = pr:GetClass():GetFName():ToString() end)
+          if cn == "EnumProperty" or cn == "ByteProperty" then
+            local ek = ""
+            pcall(function() local e = pr:GetEnum(); if e then ek = S.enumKey(e) or "" end end)
+            if ek:find("CompanionCharacter") or (ek == "" and n:find("Companion")) then
+              local okV, v = pcall(function() return obj[n] end)
+              if okV and type(v) == "number" then out[prefix .. n] = { obj = obj, name = n, value = v } end
+            end
+          end
+        end)
+        local oks, sup = pcall(function() return c:GetSuperStruct() end)
+        c = oks and sup or nil; depth = depth + 1
+      end
+    end)
+  end
+  scan(actor, "")
+  pcall(function()
+    local comps = actor:K2_GetComponentsByClass(StaticFindObject("/Script/Engine.ActorComponent"))
+    comps:ForEach(function(_, el)
+      local comp = el:get()
+      if valid(comp) then scan(comp, clsName(comp) .. ".") end
+    end)
+  end)
+  return out
+end
+S.roleText = function(sites)
+  local parts = {}
+  for k, st in pairs(sites) do parts[#parts + 1] = k .. "=" .. tostring(st.value) end
+  table.sort(parts)
+  return #parts > 0 and table.concat(parts, ", ") or "нет"
+end
+-- на время подсадки делаем «напарником-ботом» героя hero (обычно Low):
+-- меняем роль местами с героем игрока 2; вернуть — S.roleRestore()
+S.roleSwapFor = function(hero)
+  if S.roleSwap then return S.roleSwap.value end
+  local P = S.playpalValue()
+  local buddy = S.buddy
+  if P == nil or not valid(buddy) or hero == buddy then return nil end
+  local mine, theirs = S.roleSites(hero), S.roleSites(buddy)
+  local aiSites = valid(S.ai) and S.roleSites(S.ai) or {}
+  trail(string.format("роль: у %s %s | у %s %s | у ИИ %s", heroName(hero), S.roleText(mine), heroName(buddy), S.roleText(theirs), S.roleText(aiSites)))
+  local done = {}
+  for k, b in pairs(theirs) do
+    local m = mine[k]
+    if m and b.value == P and m.value ~= P then
+      local okA = pcall(function() m.obj[m.name] = P end)
+      local okB = pcall(function() b.obj[b.name] = m.value end)
+      if okA and okB then done[#done + 1] = { m = m, b = b, k = k } end
+    end
+  end
+  -- ИИ.Playpal: к этому моменту герой уже передан ИИ, и игра могла сама
+  -- поменять Playpal (на этого героя или на пусто). Нужен этот герой;
+  -- после подсадки вернём героя игрока 2.
+  local aiPrev = nil
+  if valid(S.ai) then
+    local before = S.aiPlaypal()
+    if before ~= hero then pcall(function() S.ai.Playpal = hero end) end
+    local after = S.aiPlaypal()
+    trail(string.format("роль: ИИ.Playpal был %s, стал %s", valid(before) and heroName(before) or "пусто", valid(after) and heroName(after) or "пусто"))
+    if after == hero then aiPrev = buddy end
+  end
+  if #done == 0 and not aiPrev then
+    trail(string.format("роль: не нашёл, где игра хранит роль «напарник» — подсадку %s не начинаю", heroName(hero)))
+    return nil
+  end
+  local ks = {}
+  for _, d in ipairs(done) do ks[#ks + 1] = d.k end
+  if aiPrev then ks[#ks + 1] = "ИИ.Playpal" end
+  trail(string.format("роль: %s на время подсадки — напарник (%s)", heroName(hero), table.concat(ks, ", ")))
+  S.roleSwap = { hero = hero, value = P, list = done, aiPrev = aiPrev }
+  return P
+end
+-- кого ИИ-контроллер ведёт как напарника (поле Playpal), или nil
+S.aiPlaypal = function()
+  if not valid(S.ai) then return nil end
+  local ok, v = pcall(function() return S.ai.Playpal end)
+  if ok and valid(v) then return v end
+  return nil
+end
+-- ДИАГНОСТИКА ДЛЯ НОВОЙ ВЕРСИИ ИГРЫ (только чтение, по разу за запуск).
+-- Нужна, чтобы найти, как дать подсаживать и герою игрока 1.
+-- значения полей объекта (флаги, числа, перечисления, имена, объекты — классом)
+S.objFields = function(obj, stopAt)
+  local parts = {}
+  pcall(function()
+    local c, depth = obj:GetClass(), 0
+    while valid(c) and depth < 12 do
+      local cn0 = c:GetFName():ToString()
+      if cn0 == (stopAt or "Actor") or cn0 == "Object" or cn0 == "ActorComponent" then break end
+      c:ForEachProperty(function(pr)
+        local n = pr:GetFName():ToString()
+        local cn = ""; pcall(function() cn = pr:GetClass():GetFName():ToString() end)
+        local okV, v = pcall(function() return obj[n] end)
+        if not okV then return end
+        local t = type(v)
+        if t == "number" or t == "boolean" then parts[#parts + 1] = n .. "=" .. tostring(v)
+        elseif cn:find("Object") or cn:find("Class") then
+          parts[#parts + 1] = n .. "=" .. (valid(v) and (isHero(v) and heroName(v) or clsName(v)) or "пусто")
+        elseif cn == "NameProperty" then pcall(function() parts[#parts + 1] = n .. "=" .. v:ToString() end) end
+      end)
+      local oks, sup = pcall(function() return c:GetSuperStruct() end)
+      c = oks and sup or nil; depth = depth + 1
+    end
+  end)
+  return table.concat(parts, ", ")
+end
+-- место подсадки: класс и поля (раз на класс места)
+S.diagSpot = function(spot)
+  if not valid(spot) then return end
+  S.diagSpotDone = S.diagSpotDone or {}
+  local k = clsName(spot)
+  if S.diagSpotDone[k] then return end
+  S.diagSpotDone[k] = true
+  trail(string.format("диагностика: место подсадки %s: %s", k, S.objFields(spot)))
+end
+-- объект-команда, которую вернула игра (подсадка Alone работает — смотрим, что внутри)
+S.diagAction = function(fnName, action)
+  if not (S.newApi and valid(action)) then return end
+  S.diagActionDone = S.diagActionDone or {}
+  if S.diagActionDone[fnName] then return end
+  S.diagActionDone[fnName] = true
+  trail(string.format("диагностика: команда %s → %s: %s", fnName, clsName(action), S.objFields(action, "Object")))
+end
+-- где игра ссылается на героев и чем отличаются их компоненты
+S.diagRoles = function()
+  if S.diagRolesDone or not (valid(S.p1) and valid(S.buddy)) then return end
+  S.diagRolesDone = true
+  local function comps(h)
+    local out = {}
+    pcall(function()
+      local arr = h:K2_GetComponentsByClass(StaticFindObject("/Script/Engine.ActorComponent"))
+      arr:ForEach(function(_, el) local c = el:get(); if valid(c) then out[clsName(c)] = c end end)
+    end)
+    return out
+  end
+  local cl, ca = comps(S.p1), comps(S.buddy)
+  local onlyL, onlyA = {}, {}
+  for k in pairs(cl) do if not ca[k] then onlyL[#onlyL + 1] = k end end
+  for k in pairs(ca) do if not cl[k] then onlyA[#onlyA + 1] = k end end
+  table.sort(onlyL); table.sort(onlyA)
+  trail(string.format("диагностика: компоненты только у %s: %s | только у %s: %s", heroName(S.p1), #onlyL > 0 and table.concat(onlyL, ", ") or "нет",
+    heroName(S.buddy), #onlyA > 0 and table.concat(onlyA, ", ") or "нет"))
+  -- поля компонентов «про напарника» у обоих героев
+  for k, c in pairs(ca) do
+    if k:find("Playpal") or k:find("Companion") or k:find("Buddy") or k:find("AI") then
+      trail(string.format("диагностика: %s у %s: %s", k, heroName(S.buddy), S.objFields(c, "ActorComponent")))
+      if cl[k] then trail(string.format("диагностика: %s у %s: %s", k, heroName(S.p1), S.objFields(cl[k], "ActorComponent"))) end
+    end
+  end
+  -- кто ссылается на героев: подсистема персонажей, PIP, ИИ, контроллеры, режим игры
+  local holders = {}
+  local function add(label, o) if valid(o) then holders[#holders + 1] = { label = label, o = o } end end
+  pcall(function() add("KosmosCharactersSubsystem", FindFirstOf("KosmosCharactersSubsystem")) end)
+  pcall(function() add("KosmosPIPManager", FindFirstOf("KosmosPIPManager")) end)
+  pcall(function() add("ИИ", S.ai) end)
+  pcall(function() add("контроллер 1", S.pc1) end)
+  pcall(function() add("контроллер 2", S.pc2) end)
+  pcall(function() add("режим игры", UEHelpers.GetGameModeBase()) end)
+  pcall(function() add("состояние игры", UEHelpers.GetGameplayStatics():GetGameState(UEHelpers.GetWorld())) end)
+  for _, hd in ipairs(holders) do
+    local refs = {}
+    pcall(function()
+      local c, depth = hd.o:GetClass(), 0
+      while valid(c) and depth < 12 do
+        c:ForEachProperty(function(pr)
+          local n = pr:GetFName():ToString()
+          local cn = ""; pcall(function() cn = pr:GetClass():GetFName():ToString() end)
+          if cn:find("Object") then
+            local okV, v = pcall(function() return hd.o[n] end)
+            if okV and valid(v) and isHero(v) then refs[#refs + 1] = n .. "→" .. heroName(v) end
+          elseif cn == "ArrayProperty" then
+            pcall(function()
+              local i = 0
+              hd.o[n]:ForEach(function(_, el)
+                i = i + 1
+                local v = el:get()
+                if valid(v) and isHero(v) then refs[#refs + 1] = string.format("%s[%d]→%s", n, i, heroName(v)) end
+              end)
+            end)
+          elseif cn == "ByteProperty" or cn == "EnumProperty" then
+            if n:find("Companion") or n:find("Character") or n:find("Playpal") then
+              local okV, v = pcall(function() return hd.o[n] end)
+              if okV then refs[#refs + 1] = n .. "=" .. tostring(v) end
+            end
+          end
+        end)
+        local oks, sup = pcall(function() return c:GetSuperStruct() end)
+        c = oks and sup or nil; depth = depth + 1
+      end
+    end)
+    trail(string.format("диагностика: %s (%s) ссылается: %s", hd.label, clsName(hd.o), #refs > 0 and table.concat(refs, ", ") or "ни на кого из героев"))
+  end
+end
+-- что делает сама игра, когда Low жмёт «схватить» у места подсадки (мод не вмешивается)
+S.nativeWatchTick = function()
+  local w = S.nativeWatch; if not w then return end
+  if now() > w.untilT then
+    trail(string.format("диагностика: игра сама за 4 с: монтажи Low=%s, Alone=%s", w.lowM or "нет", w.aloneM or "нет"))
+    S.nativeWatch = nil
+    return
+  end
+  pcall(function()
+    local m = S.p1:GetCurrentMontage(); if valid(m) then w.lowM = m:GetFName():ToString() end
+    local m2 = S.buddy:GetCurrentMontage(); if valid(m2) then w.aloneM = m2:GetFName():ToString() end
+  end)
+end
+-- может ли герой hero на время подсадки стать «напарником-ботом»
+S.canTakeRole = function(hero)
+  -- только для другой версии игры (там команды получают тип, а не героя);
+  -- на версии, под которую сделан мод, подсадка работает как раньше
+  if not S.newApi then return true end
+  local P = S.playpalValue()
+  if P == nil then return true end          -- старая версия игры: роль не нужна
+  if hero == S.buddy then return true end
+  -- результат запоминаем для этой пары героев (после смены уровня — заново)
+  local pair = tostring(hero) .. "|" .. tostring(S.buddy)
+  if S.canRolePair ~= pair then S.canRole, S.canRolePair = nil, pair end
+  if S.canRole == nil then
+    local mine, theirs = S.roleSites(hero), S.roleSites(S.buddy)
+    S.canRole = false
+    for k, b in pairs(theirs) do
+      if mine[k] and b.value == P and mine[k].value ~= P then S.canRole = true end
+    end
+    -- v9.15.8: роль хранит ИИ-контроллер — поле Playpal (кого он ведёт как
+    -- напарника). Его на время подсадки и меняем.
+    if not S.canRole and S.aiPlaypal() == S.buddy then S.canRole = true end
+    local ap = S.aiPlaypal()
+    trail(string.format("роль: у %s %s | у %s %s | ИИ.Playpal=%s — %s", heroName(hero), S.roleText(mine), heroName(S.buddy), S.roleText(theirs),
+      valid(ap) and heroName(ap) or "нет", S.canRole and "можно поменять на время подсадки" or "поменять нельзя"))
+  end
+  return S.canRole
+end
+S.roleRestore = function()
+  local sw = S.roleSwap; if not sw then return end
+  S.roleSwap = nil
+  for _, d in ipairs(sw.list) do
+    pcall(function() d.m.obj[d.m.name] = d.m.value end)
+    pcall(function() d.b.obj[d.b.name] = d.b.value end)
+  end
+  if sw.aiPrev then pcall(function() S.ai.Playpal = sw.aiPrev end) end
+  trail("роль: вернул как было")
+end
+S.resolveHeroType = function(hero, p)
+  S.typeCache = S.typeCache or {}
+  local hn = heroName(hero)
+  -- роль на время подсадки
+  if S.roleSwap and S.roleSwap.hero == hero then return S.roleSwap.value, "роль на время подсадки" end
+  -- герой игрока 2 — бывший бот-напарник: его роль известна сразу
+  if hero == S.buddy and not (CFG.learned_types and CFG.learned_types[hn]) then
+    local P, from = S.playpalValue()
+    if P ~= nil then return P, from end
+  end
+  -- герой игрока 1 в новой версии: только через подмену роли
+  if hero == S.p1 and S.playpalValue() ~= nil then
+    return S.roleSwapFor(hero), "роль на время подсадки"
+  end
+  if S.typeCache[hn] then return S.typeCache[hn].v, S.typeCache[hn].from end
+  -- 0) значение, которое игра сама передавала этому герою (запомнено)
+  local learned = CFG.learned_types and CFG.learned_types[hn]
+  if type(learned) == "number" then
+    S.typeCache[hn] = { v = learned, from = "игра сама (запомнено)" }
+    return learned, "игра сама (запомнено)"
+  end
+  local info = S.typeDiscover()
+  local function done(v, from)
+    S.typeCache[hn] = { v = v, from = from }
+    return v, from
+  end
+  -- 1) спросить саму игру
+  for _, l in ipairs(info.lookups) do
+    local map, relevant, match = {}, false, nil
+    for v = 0, 7 do
+      local who, called = S.lookupHero(l, v, hero)
+      if called then
+        local h = valid(who) and isHero(who)
+        if h then relevant = true end
+        map[#map + 1] = tostring(v) .. "→" .. (h and heroName(who) or (valid(who) and clsName(who) or "пусто"))
+        if who == hero and match == nil then match = v end
+      end
+    end
+    trail(string.format("тип героя: %s:%s находит %s", l.owner, l.fn, table.concat(map, ", ")))
+    if relevant then
+      if match ~= nil then return done(match, "игра: " .. l.fn) end
+      trail(string.format("тип героя: %s не находит %s ни по одному значению", l.fn, hn))
+      return nil
+    end
+  end
+  -- 2) свойство самого героя (если у второго героя оно другое)
+  local mine = S.heroTypeProps(hero)
+  local other = S.otherHero(hero)
+  local theirs = valid(other) and S.heroTypeProps(other) or {}
+  local parts = {}
+  for n, v in pairs(mine) do parts[#parts + 1] = n .. "=" .. tostring(v) .. (theirs[n] ~= nil and (" (у " .. heroName(other) .. " " .. tostring(theirs[n]) .. ")") or "") end
+  if #parts > 0 then trail(string.format("тип героя: свойства %s: %s", hn, table.concat(parts, ", "))) end
+  local best = nil
+  for n, v in pairs(mine) do
+    if theirs[n] == nil or theirs[n] ~= v then
+      local score = (n == p.name and 3) or (n:find(p.name, 1, true) and 2) or 1
+      if not best or score > best.score then best = { n = n, v = v, score = score } end
+    end
+  end
+  if best then return done(best.v, "свойство " .. best.n) end
+  -- 3) перечисление по имени героя
+  local enums = {}
+  if p.enum then enums[#enums + 1] = p.enum end
+  for _, e in ipairs(info.enums) do enums[#enums + 1] = e end
+  table.sort(enums, function(a, b)
+    local ka, kb = S.enumKey(a) or "", S.enumKey(b) or ""
+    local sa = (ka:find(p.name, 1, true) and 2) or (ka:find("CharacterType") and 1) or 0
+    local sb = (kb:find(p.name, 1, true) and 2) or (kb:find("CharacterType") and 1) or 0
+    return sa > sb
+  end)
+  -- имя героя должно совпасть со значением целиком (или отдельным словом):
+  -- «SlowWalk» — не «Low»
+  local lhn = hn:lower()
+  for _, e in ipairs(enums) do
+    local key = S.enumKey(e) or ""
+    if key:find("Companion") or key:find("CharacterType") then
+      for _, en in ipairs(S.enumEntries(e)) do
+        local short = en.name:gsub("^.*::", ""):lower()
+        local hit = (short == lhn)
+        for w in short:gmatch("[%a%d]+") do if w == lhn then hit = true end end
+        if lhn ~= "" and lhn ~= "?" and hit then return done(en.value, "по имени " .. en.name) end
+      end
+    end
+  end
+  return nil
+end
+-- Слушаем команды, которые игра сама даёт ИИ-напарнику (когда второй игрок
+-- выключен): из них узнаём тип героя «из первых рук» и запоминаем в настройках.
+S.learnHooks = function()
+  if S.learnHooked then return end
+  S.learnHooked = true
+  local n = 0
+  for group, path in pairs(S.CMD_CLASSES) do
+    local names = {}
+    pcall(function() StaticFindObject(path):ForEachFunction(function(f) names[#names + 1] = f:GetFName():ToString() end) end)
+    for _, fn in ipairs(names) do
+      local sig = S.readSig(path, fn)
+      local at = nil
+      for i, prm in ipairs(sig) do if prm.heroType then at = i end end
+      if at then
+        local ok = pcall(function()
+          RegisterHook(path .. ":" .. fn, function(ctx, ...)
+            if S.inCmd then return end
+            local args = { ... }
+            pcall(S.learnFromGame, fn, args[at])
+          end)
+        end)
+        if ok then n = n + 1 end
+      end
+    end
+  end
+  trail(string.format("тип героя: слушаю команды игры напарнику (%d функций)", n))
+end
+S.learnFromGame = function(fn, param)
+  local v = nil; pcall(function() v = param:get() end)
+  if type(v) ~= "number" then return end
+  -- кому игра даёт команду: герою под ИИ-контроллером
+  local heroesAI = {}
+  for _, ai in ipairs(FindAllOf("KosmosAIController") or {}) do
+    local okp, pawn = pcall(function() return ai.Pawn end)
+    if okp and valid(pawn) and isHero(pawn) then heroesAI[#heroesAI + 1] = pawn end
+  end
+  if #heroesAI ~= 1 then
+    trail(string.format("тип героя: игра дала %s с типом %d, но героев под ИИ %d — не запоминаю", fn, v, #heroesAI))
+    return
+  end
+  local hn = heroName(heroesAI[1])
+  CFG.learned_types = CFG.learned_types or {}
+  if CFG.learned_types[hn] ~= v then
+    CFG.learned_types[hn] = v
+    pcall(saveSettings)
+    S.typeCache = nil
+    trail(string.format("тип героя: игра сама дала %s герою %s с типом %d — запомнил", fn, hn, v))
+  end
+end
+S.cmdSig = {}
+S.cmdCall = function(group, fnName, ...)
+  local cmds = S.cmdObj(group)
+  local given = table.pack(...)
+  local key = group .. ":" .. fnName
+  local sig = S.cmdSig[key]
+  if not sig then
+    sig = S.readSig(S.CMD_CLASSES[group], fnName)
+    S.cmdSig[key] = sig
+    if #sig ~= 0 and #sig ~= given.n then
+      S.newApi = true
+      trail(string.format("команды напарнику: у %s другие параметры (%d вместо %d): %s — подбираю по видам", fnName, #sig, given.n, S.sigText(sig)))
+      for _, p in ipairs(sig) do
+        if p.enum then trail(string.format("команды напарнику: %s.%s — перечисление %s: %s", fnName, p.name, S.enumKey(p.enum) or "?", S.enumText(p.enum))) end
+      end
+      pcall(S.apiFingerprint)
+    end
+  end
+  if #sig == 0 or #sig == given.n then return cmds[fnName](cmds, ...) end
+  local function kindOf(v)
+    local t = type(v)
+    if t == "number" then return "number" elseif t == "boolean" then return "bool" elseif t == "table" then return "struct" end
+    if t == "userdata" then
+      if pcall(function() return v:GetFullName() end) then return "object" end
+      if pcall(function() return v:ToString() end) then return "name" end
+    end
+    return "other"
+  end
+  local used, args, desc, missing = {}, {}, {}, {}
+  local hasType = false
+  for _, p in ipairs(sig) do if p.heroType then hasType = true end end
+  for i, p in ipairs(sig) do
+    local v, found = nil, false
+    -- тип персонажа — у героя, которому даём команду; наши числа на него не тратим
+    if p.heroType then
+      local hero = isHero(given[1]) and given[1] or S.buddy
+      local hv, from = nil, nil
+      hv, from = S.resolveHeroType(hero, p)
+      if hv == nil then
+        trail(string.format("команды напарнику: %s — не узнал %s для %s, команду не даю", fnName, p.name, heroName(hero)))
+        return nil
+      end
+      S.typeLogged = S.typeLogged or {}
+      if S.typeLogged[key] ~= hv then
+        S.typeLogged[key] = hv
+        trail(string.format("команды напарнику: %s.%s = %s для %s (%s)", fnName, p.name, tostring(hv), heroName(hero), from or "?"))
+      end
+      v, found = hv, true
+    end
+    -- «контекст мира» — любой объект уровня; наши значения на него не тратим
+    if not found and p.kind == "object" and (p.name:find("WorldContext") or p.name:find("Context")) then
+      v, found = given[1], true
+      -- герой, которому раньше давали команду, теперь передаётся через контекст и тип
+      if hasType then used[1] = true end
+    end
+    -- объект — тот из наших, что подходит по классу параметра
+    if not found and p.kind == "object" and p.pcls then
+      for j = 1, given.n do
+        if not used[j] and kindOf(given[j]) == "object" then
+          local okIs, is = pcall(function() return given[j]:IsA(p.pcls) end)
+          if okIs and is then v, found = given[j], true; used[j] = true; break end
+        end
+      end
+    end
+    if not found then
+      for j = 1, given.n do
+        if not used[j] and kindOf(given[j]) == p.kind then v, found = given[j], true; used[j] = true; break end
+      end
+    end
+    -- значения для параметра нет: вызов «наугад» может уронить игру
+    -- (так было с подсадкой), поэтому такую команду не даём, а пишем, чего не хватило
+    if not found then missing[#missing + 1] = p.name .. ":" .. p.cls end
+    args[i] = v
+    desc[#desc + 1] = p.name .. "=" .. (kindOf(v) == "object" and clsName(v) or tostring(v))
+  end
+  if #missing > 0 then
+    S.missLogged = S.missLogged or {}
+    if not S.missLogged[key] then
+      S.missLogged[key] = true
+      trail(string.format("команды напарнику: %s — нечем заполнить %s, команду не даю", fnName, table.concat(missing, ", ")))
+    end
+    return nil
+  end
+  S.argsLogged = S.argsLogged or {}
+  if not S.argsLogged[key] then S.argsLogged[key] = true; trail(string.format("команды напарнику: вызываю %s(%s)", fnName, table.concat(desc, ", "))) end
+  S.inCmd = true
+  local okc, res = pcall(function() return cmds[fnName](cmds, table.unpack(args, 1, #sig)) end)
+  S.inCmd = false
+  if not okc then error(res, 0) end
+  return res
+end
+S.playpalCall = function(fnName, ...) return S.cmdCall("Interactions", fnName, ...) end
+-- При старте кооператива: сверяем число параметров у всех команд, которые
+-- даёт мод. Отличается хоть одна — пишем в лог весь API этой версии игры.
+S.CMD_EXPECT = {
+  { "Interactions", "PlaypalBoost", 2 }, { "Interactions", "PlaypalFreeDraggable", 5 },
+  { "Interactions", "PlaypalPushPull", 4 }, { "Carriable", "PlaypalCarriable_Putdown", 3 },
+  { "Carriable", "PlaypalCarriable_Pickup", 2 }, { "Carriable", "PlaypalCarriable_Throw", 3 },
+  { "WeaponTools", "PlaypalWeaponAttack", 8 }, { "WeaponTools", "PlaypalWeaponShowHide", 2 },
+}
+S.checkApi = function()
+  if S.apiChecked then return end
+  S.apiChecked = true
+  local diff = {}
+  for _, e in ipairs(S.CMD_EXPECT) do
+    local sig = S.readSig(S.CMD_CLASSES[e[1]], e[2])
+    if #sig == 0 then diff[#diff + 1] = e[2] .. ": нет в игре"
+    elseif #sig ~= e[3] then diff[#diff + 1] = string.format("%s: %d вместо %d", e[2], #sig, e[3]) end
+  end
+  if #diff == 0 then trail("команды напарнику: версия игры совпадает с той, под которую сделан мод")
+  else
+    S.newApi = true
+    trail("команды напарнику: ДРУГАЯ ВЕРСИЯ ИГРЫ — " .. table.concat(diff, "; "))
+    pcall(S.apiFingerprint)
+    pcall(S.learnHooks)
+    pcall(S.typeDiscover)
+  end
 end
 local function nearestDraggable()
   local best, bestD
@@ -2823,7 +3596,7 @@ local function issueDrag()
   local loc = dragTarget(S.drag.f or 0, S.drag.r or 0); if not loc then return false end
   local m = placeMarker("dragTarget", loc); if not valid(m) then return false end
   local ok, action = try("FreeDraggable", function()
-    return interactCmds():PlaypalFreeDraggable(S.buddy, S.drag.box, m, loc, 40)
+    return S.playpalCall("PlaypalFreeDraggable", S.buddy, S.drag.box, m, loc, 40)
   end)
   if ok and valid(action) then
     try("FreeDraggable Activate", function() action:Activate() end)
@@ -2885,7 +3658,7 @@ end
 local function cboxIssue(target)
   local c = S.cbox
   local ok, action = try("PushPull", function()
-    return interactCmds():PlaypalPushPull(S.buddy, c.box, target, 3)
+    return S.playpalCall("PlaypalPushPull", S.buddy, c.box, target, 3)
   end)
   if ok and valid(action) then
     try("PushPull Activate", function() action:Activate() end)
@@ -3444,6 +4217,7 @@ S.animDiff = function(h, base, label)
   trail(string.format("анимация %s %s: %s | изменилось: %s", heroName(h), label, S.animState(h), #ch > 0 and table.concat(ch, "; ", 1, math.min(#ch, 40)) or "ничего"))
 end
 S.boostEnd = function(reason)
+  pcall(S.roleRestore)
   local b = S.boost; if not b then return end
   -- разбор: через 1,5 с после подсадки сравним анимацию героев со снимком до неё
   S.animCheckAt = S.frames + 90
@@ -3858,10 +4632,19 @@ S.boostStart = function(hero, owner, spot)
     -- камера игрока 1 замирает на месте на время подсадки
     pcall(S.applyCam1Freeze)
   end
-  S.boost = { hero = hero, owner = owner, spot = spot, startFrame = S.frames, prevChar = prevChar }
+  S.boost = { hero = hero, owner = owner, spot = spot, startFrame = S.frames, startT = now(), prevChar = prevChar }
   pcall(S.boostPassThrough, true)
-  local ok, action = try("PlaypalBoost", function() return interactCmds():PlaypalBoost(hero, spot) end)
+  local ok, action = try("PlaypalBoost", function() return S.playpalCall("PlaypalBoost", hero, spot) end)
   if ok and valid(action) then
+    pcall(S.diagAction, "PlaypalBoost", action)
+    -- v9.15.8 (новая версия игры, подсаживает герой игрока 1): команде явно
+    -- указываем наш ИИ-контроллер, который сейчас ведёт этого героя
+    if S.newApi and S.roleSwap and valid(S.ai) then
+      pcall(function()
+        local cur = action.AIController
+        if not valid(cur) then action.AIController = S.ai; trail("подсадка: команде указан ИИ-контроллер") end
+      end)
+    end
     try("PlaypalBoost Activate", function() action:Activate() end)
     log("подсадка: %s подсаживает (%s)", heroName(hero), spot:GetFName():ToString())
     return true
@@ -3922,9 +4705,9 @@ S.rbEdges = function()
   local r1, r2 = S.grabDown(true), S.grabDown(false)
   local e1, e2 = r1 and not S.prevRB1, r2 and not S.prevRB2
   S.prevRB1, S.prevRB2 = r1, r2
-  -- сколько кадров курок держат (для начала подсадки)
-  S.rbHeld1 = r1 and (S.rbHeld1 or 0) + 1 or 0
-  S.rbHeld2 = r2 and (S.rbHeld2 or 0) + 1 or 0
+  -- с какого момента курок держат (для начала подсадки) — в секундах
+  if r1 then S.rbAt1 = S.rbAt1 or now() else S.rbAt1, S.rbFired1 = nil, nil end
+  if r2 then S.rbAt2 = S.rbAt2 or now() else S.rbAt2, S.rbFired2 = nil, nil end
   return e1, e2
 end
 S.boostTick = function(e1, e2)
@@ -3934,8 +4717,9 @@ S.boostTick = function(e1, e2)
       local m = b.hero:GetCurrentMontage()
       if valid(m) and m:GetFName():ToString():find("GiveBoost") then
         b.poseAt = S.frames
+        b.poseT = now()
         local hl, sl = b.hero:K2_GetActorLocation(), b.spot:K2_GetActorLocation()
-        trail(string.format("подсадка: %s встал в позу через %.1f с (до места %.0f см)", heroName(b.hero), (S.frames - b.startFrame) / 60, dist(hl, sl)))
+        trail(string.format("подсадка: %s встал в позу через %.1f с (до места %.0f см)", heroName(b.hero), now() - (b.startT or now()), dist(hl, sl)))
       end
     end)
     if not b.poseAt and (S.frames - b.startFrame) % 60 == 59 then
@@ -3961,7 +4745,10 @@ S.boostTick = function(e1, e2)
   local held = true
   -- сразу после передачи героя ИИ игра «забывает» зажатый курок и шлёт 0;
   -- это не отпускание. Удержание засчитываем только после этого момента.
-  if bd or v > 0.35 then if age > 5 then b.sawHeld = true end; b.lowFrames = 0
+  -- v9.15.8 (только для новой версии игры): удержание засчитываем только
+  -- после того, как подсаживающий встал в позу. В новой версии игры курок героя под ИИ то виден, то нет, и
+  -- «увиденный, а потом пропавший» курок отменял подсадку ещё до позы.
+  if bd or v > 0.35 then if age > 5 and (not S.newApi or (b.poseAt and S.frames - b.poseAt > 3)) then b.sawHeld = true end; b.lowFrames = 0
   elseif v > 0.001 and v < 0.25 then b.lowFrames = (b.lowFrames or 0) + 1; if b.lowFrames >= 2 then held = false end
   elseif b.sawHeld then held = false end
   -- отпускание засчитываем, только если кнопку не видно 15 кадров подряд
@@ -3976,6 +4763,16 @@ S.boostTick = function(e1, e2)
     local okm, m = pcall(function() return other:GetCurrentMontage() end)
     local receiving = okm and valid(m) and m:GetFName():ToString():find("ReceiveBoost")
     if not receiving then S.boostEnd("отпустил кнопку") return end
+  end
+  -- не встал в позу за 5 с — отменяем (а не ждём 25 с)
+  if S.newApi and not b.poseAt and b.startT and now() - b.startT > 5 then S.boostEnd("не встал в позу") return end
+  -- в позе, но курок после позы ни разу не виден (новая версия игры): ждём,
+  -- пока второй запрыгнет, но не дольше 8 с
+  if S.newApi and b.poseT and not b.sawHeld and now() - b.poseT > 8 then
+    local other = (b.hero == S.p1) and S.buddy or S.p1
+    local okm, m = pcall(function() return other:GetCurrentMontage() end)
+    local receiving = okm and valid(m) and m:GetFName():ToString():find("ReceiveBoost")
+    if not receiving then S.boostEnd("никто не запрыгнул") return end
   end
   if age > 60 * 25 then S.boostEnd("слишком долго") return end
   if age % 60 == 30 then pcall(function() trail(string.format("враги при подсадке (%.0f с, Low у %s): %s", age / 60, clsName(S.p1.Controller), S.enemyInfo())) end) end
@@ -3999,6 +4796,7 @@ S.anyDying = function()
 end
 S.boostInput = function()
   local e1, e2 = S.rbEdges()
+  if S.nativeWatch then pcall(S.nativeWatchTick) end
   -- во время сцены смерти подсадку не начинаем, а идущую — заканчиваем:
   -- иначе герой остаётся у ИИ, когда игра возрождает героев, и игра падает
   if S.frames % 6 == 0 then S.dyingNow = S.anyDying() end
@@ -4019,9 +4817,10 @@ S.boostInput = function()
   -- короткие нажатия у места подсадки (схватить что-то, в погоне) раньше
   -- то начинали, то сразу отменяли подсадку, и каждый раз героя забирали у
   -- игрока и возвращали — в погоне это роняло игру
-  local HOLD = CFG.boost_hold_frames or 24
-  if S.rbHeld1 == HOLD then S.tryBoost(S.p1, S.pc1, "Low")
-  elseif S.rbHeld2 == HOLD then S.tryBoost(S.buddy, S.pc2, "Alone") end
+  local HOLD = CFG.boost_hold_seconds or 0.4
+  local t = now()
+  if S.rbAt1 and not S.rbFired1 and t - S.rbAt1 >= HOLD then S.rbFired1 = true; S.tryBoost(S.p1, S.pc1, "Low")
+  elseif S.rbAt2 and not S.rbFired2 and t - S.rbAt2 >= HOLD then S.rbFired2 = true; S.tryBoost(S.buddy, S.pc2, "Alone") end
 end
 -- Начать подсадку героем hero. Если у него в руках вещь (фонарик, ключ),
 -- сначала убираем её: при передаче героя ИИ игра обрывает способность
@@ -4031,6 +4830,20 @@ end
 S.tryBoost = function(hero, owner, who)
   local spot = S.nearestBoostTo(hero)
   if not spot then return end
+  -- v9.15.8: в новой версии игры подсаживает только «напарник-бот». Если
+  -- герою игрока 1 эту роль на время дать нельзя — подсаживает герой
+  -- игрока 2, а Low запрыгивает (подсадка работает, просто даёт её Alone).
+  -- Подсаживает только тот, кто может: героя игрока 2 не забираем, а
+  -- нажатие игрока 1 оставляем самой игре (и записываем, что она делает).
+  if hero == S.p1 and valid(S.buddy) and not S.canTakeRole(hero) then
+    if not S.roleFallbackSaid then S.roleFallbackSaid = true; trail("подсадка: Low не может быть напарником в этой версии игры — подсаживать может только второй игрок") end
+    toast("Подсадить может только второй игрок")
+    pcall(S.diagRoles)
+    pcall(S.diagSpot, spot)
+    S.nativeWatch = { untilT = now() + 4, spot = spot }
+    return
+  end
+  if S.newApi then pcall(S.diagRoles) end
   local stash = CFG.boost_stash ~= false
   local ga = stash and S.p1EquipAbility(hero) or nil
   local item = stash and S.p1HeldItem(hero) or nil
@@ -5581,7 +6394,7 @@ local function applyInput()
   local f, r, lx, ly, jump, grab, crouch, sprint, throw, weapon = readP2()
   if weapon and not S.prev.weapon and not heldItem() then
     local want = not S.weaponOut
-    if runCmd(want and "достать оружие" or "убрать оружие", function() return weaponCmds():PlaypalWeaponShowHide(S.buddy, want) end) then
+    if runCmd(want and "достать оружие" or "убрать оружие", function() return S.cmdCall("WeaponTools", "PlaypalWeaponShowHide", S.buddy, want) end) then
       S.weaponOut = want
     end
   end
@@ -5631,7 +6444,7 @@ local function applyInput()
       if not S.pickedAt or S.frames - S.pickedAt > 20 then
         if not S.lastPutdownAt or S.frames - S.lastPutdownAt > 50 then
           S.lastPutdownAt = S.frames
-          runCmd("положить", function() return carryCmds():PlaypalCarriable_Putdown(S.buddy, false, { X = 0, Y = 0, Z = 0 }) end)
+          runCmd("положить", function() return S.cmdCall("Carriable", "PlaypalCarriable_Putdown", S.buddy, false, { X = 0, Y = 0, Z = 0 }) end)
         end
       end
       S.prev.grab, S.prev.jump, S.prev.throw = grab, jump, throw
@@ -5671,7 +6484,7 @@ local function applyInput()
         log("рядом с напарником: %s", #near > 0 and table.concat(near, "; ") or "ничего")
       end
       local c, d = c0, cd0
-      if c and runCmd(string.format("поднять (%.0f см)", d), function() return carryCmds():PlaypalCarriable_Pickup(S.buddy, c) end) then
+      if c and runCmd(string.format("поднять (%.0f см)", d), function() return S.cmdCall("Carriable", "PlaypalCarriable_Pickup", S.buddy, c) end) then
         S.prev.grab = grab; return
       end
     end
@@ -6419,6 +7232,7 @@ local function Tick()
     if S.frames % 60 == 0 and acquire() then
       -- подсадка, прерванная смертью: ИИ-контроллер и камера игрока 1 остались
       -- в «режиме подсадки» — возвращаем всё как было
+      pcall(S.roleRestore)
       if S.boost or S.cam1Frozen or S.cam1PawnHack then
         S.boost = nil
         try("ai tick off", function() S.ai:SetActorTickEnabled(false) end)
@@ -6545,4 +7359,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.15.7 загружен. F9 — меню кооператива")
+log("v9.15.8 загружен. F9 — меню кооператива")
