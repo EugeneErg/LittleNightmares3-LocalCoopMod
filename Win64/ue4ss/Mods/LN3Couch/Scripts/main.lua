@@ -2297,6 +2297,13 @@ local function takeBuddy()
   -- продолжит работать, на ближайшем кадре он обратится к своему герою, а героя
   -- уже нет — игра падала. Поэтому сначала полностью его останавливаем.
   if valid(S.ai) then
+    -- v9.15.7: путь ИИ ведёт отдельный компонент со своим тиком — выключение
+    -- тика контроллера его не останавливает. Если напарник в этот момент шёл
+    -- по связке пути (прыжок, лаз), компонент доходил до связки уже без героя
+    -- и игра падала (обращение к пустому движению в KosmosPlaypalNavLink).
+    -- Поэтому сначала обрываем движение и команды ИИ.
+    try("ai stop movement", function() S.ai:StopMovement() end)
+    pcall(function() S.ai:StopAllAICommands() end)
     try("ai tick off", function() S.ai:SetActorTickEnabled(false) end)
     setBrain(S.ai, false)
   end
