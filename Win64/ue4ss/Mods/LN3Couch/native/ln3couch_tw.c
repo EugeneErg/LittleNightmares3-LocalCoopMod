@@ -25,7 +25,7 @@ typedef void *(*WeakGetFn)(void *weak);
 
 static CompositeFn g_orig;
 static WeakGetFn g_weakGet;
-static char g_logPath[MAX_PATH];
+static char g_logPath[MAX_PATH], g_okPath[MAX_PATH];
 
 static void logmsg(const char *fmt, ...) {
     FILE *f = fopen(g_logPath, "a");
@@ -79,10 +79,55 @@ static volatile LONG g_outLogged;
 // сборки (AddPostProcessingPasses) — меняем его на входе в неё. Место вида в
 // буфере кадра (ViewRect) к этому времени уже посчитано и не меняется.
 static volatile LONG g_methodLogged;
+// ВЫВОД ПОЛОВИН ВНЕ ДВУХ МИРОВ. Чтобы каждый игрок был на своей стороне, мод
+// раньше ставил игрока 2 первым в списке локальных игроков. Но ролики движка
+// (смена камер в LevelSequence) отдают камеру первому локальному игроку — и
+// вид игрока 2 уходил на камеру ролика: обе половины показывали Low. Теперь
+// порядок игроков не трогается, а места вывода меняет эта библиотека. Указание
+// мод пишет в файл split_out.txt рядом с библиотекой: 0 — как нарисованы,
+// 1 — поменять слева/справа, 2 — сверху/снизу. Поток ниже ждёт изменения
+// файла (уведомление Windows о папке) и читает его.
+static volatile LONG g_fileMode;
+static char g_mailPath[MAX_PATH], g_dirPath[MAX_PATH];
+static volatile LONG g_fileLogged = -1;
+static void readMail(void) {
+    for (int i = 0; i < 5; i++) {
+        FILE *f = fopen(g_mailPath, "rb");
+        if (f) {
+            int c = fgetc(f); fclose(f);
+            LONG m = (c == '1') ? 1 : (c == '2') ? 2 : 0;
+            InterlockedExchange(&g_fileMode, m);
+            if (InterlockedExchange(&g_fileLogged, m) != m)
+                logmsg("вывод половин (без двух миров): %s", m == 1 ? "меняю слева/справа" : m == 2 ? "меняю сверху/снизу" : "как нарисованы");
+            return;
+        }
+        Sleep(2);   // файл в этот момент пишет мод
+    }
+}
+static DWORD WINAPI mailThread(LPVOID arg) {
+    (void)arg;
+    HANDLE h = FindFirstChangeNotificationA(g_dirPath, FALSE, FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_SIZE);
+    if (h == INVALID_HANDLE_VALUE) { logmsg("ошибка: не слежу за файлом указаний — вывод половин без двух миров недоступен"); return 0; }
+    readMail();
+    for (;;) {
+        if (WaitForSingleObject(h, INFINITE) != WAIT_OBJECT_0) break;
+        readMail();
+        if (!FindNextChangeNotification(h)) break;
+    }
+    FindCloseChangeNotification(h);
+    return 0;
+}
 static void __cdecl beforePostProcess(void *view) {
-    void *ext = g_mainExt; if (!ext || !view) return;
-    void *cap = g_weakGet((char *)ext + OFF_EXT_WEAKCAP); if (!cap) return;
-    float mk = *(float *)((char *)cap + OFF_CAP_MARGINC);
+    if (!view) return;
+    float mk = 0;
+    LONG fm = g_fileMode;
+    if (fm == 1) mk = 0.5625f;
+    else if (fm == 2) mk = 0.625f;
+    else {
+        void *ext = g_mainExt; if (!ext) return;
+        void *cap = g_weakGet((char *)ext + OFF_EXT_WEAKCAP); if (!cap) return;
+        mk = *(float *)((char *)cap + OFF_CAP_MARGINC);
+    }
     if (mk != 0.5625f && mk != 0.625f) return;
     void *fam = *(void **)view;
     if (!fam || *(int *)((char *)fam + 8) != 2) return;
@@ -188,7 +233,12 @@ static DWORD WINAPI init(LPVOID arg) {
                     match(p, "4c 8b dc 55 41 55 49 8d ab c8 f8 ff ff 48 81 ec 28 08 00 00") &&
                     match(p + 0x80, "48 8d 9f 98 16 00 00") && match(p + 0xbb, "48 8d 9f 58 02 00 00")) { pp = p; cnt++; }
         }
-        if (cnt == 1 && installPostHook(pp)) logmsg("установлено: вывод половин (сборка постобработки %p)", pp);
+        if (cnt == 1 && installPostHook(pp)) {
+            logmsg("установлено: вывод половин (сборка постобработки %p)", pp);
+            // мод узнаёт по этому файлу, что менять места вывода можно
+            FILE *ok = fopen(g_okPath, "wb"); if (ok) { fputs("1", ok); fclose(ok); }
+            CloseHandle(CreateThread(NULL, 0, mailThread, NULL, 0, NULL));
+        }
         else logmsg("сборка постобработки не найдена (%d) — вывод половин недоступен", cnt);
     }
     return 0;
@@ -201,6 +251,13 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
         GetModuleFileNameA(h, g_logPath, MAX_PATH);
         char *dot = strrchr(g_logPath, '.');
         if (dot) strcpy(dot, ".log"); else strcat(g_logPath, ".log");
+        // папка библиотеки: файл указаний и отметка «вывод половин работает»
+        strcpy(g_dirPath, g_logPath);
+        char *sl = strrchr(g_dirPath, '\\'); if (!sl) sl = strrchr(g_dirPath, '/');
+        if (sl) *sl = 0; else strcpy(g_dirPath, ".");
+        snprintf(g_mailPath, MAX_PATH, "%s\\split_out.txt", g_dirPath);
+        snprintf(g_okPath, MAX_PATH, "%s\\split_out.ok", g_dirPath);
+        DeleteFileA(g_okPath);
         CloseHandle(CreateThread(NULL, 0, init, NULL, 0, NULL));
     }
     return TRUE;

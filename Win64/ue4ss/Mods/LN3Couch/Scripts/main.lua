@@ -1,4 +1,4 @@
--- LN3Couch v9.15.9 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.15.10 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -554,7 +554,12 @@ local function ensurePC2()
   return true
 end
 
-local function removePC2()
+-- worldGone: уровень уже сменился — герои, контроллер и камеры прошлого
+-- уровня удалены вместе с ним. Обращение к ним роняло загрузчик модов
+-- (v9.15.10: выход из сцены после титров — вылет сразу после «кооператив
+-- приостановлен: смена уровня»). Тогда их не трогаем, а только забываем;
+-- живут дальше лишь «локальные игроки» и настройки — с ними работаем.
+local function removePC2(worldGone)
   -- v9.15.1 (#15): если экран был разделён, вернуть игроку 1 его обычный обзор.
   -- Раньше при выходе в меню/смене уровня с разделённым экраном у игрока 1
   -- оставалась «половинная» настройка обзора, и вся игра казалась ближе
@@ -569,6 +574,7 @@ local function removePC2()
     -- камеры старого уровня могли быть уже удалены — их не трогаем
     A.cams = {}
   end
+  if worldGone then S.pc2, S.cam2 = nil, nil end
   if valid(S.lp2) and valid(S.pc2) then try("reattach", function() S.lp2.PlayerController = S.pc2 end) end
   if S.playersSwapped then pcall(S.setPlayerOrder, false) end
   try("split off", function() gms().bUseSplitscreen = false end)
@@ -1061,6 +1067,46 @@ S.watchTurnNode = function(rc)
     end)
   end)
 end
+-- управляет ли игрок героем: стик отклонён → ввод дошёл до героя?
+-- true — управляет, false — нет (жмёт, а герой не слушается), nil — не жмёт
+S.ctl = { [1] = { bad = 0 }, [2] = { bad = 0 } }
+S.controlProbe = function(i, h, sx, sy)
+  local c = S.ctl[i]
+  local push = math.sqrt(sx * sx + sy * sy) > 0.5
+  if not push then c.push = false; return end
+  local raw, spd = 0, 0
+  pcall(function() local r = h.RawInput; raw = math.sqrt(r.X * r.X + r.Y * r.Y) end)
+  pcall(function() spd = h:GetVelocity():Size() end)
+  if raw > 0.1 or spd > 30 then c.bad = 0; c.on = true
+  else c.bad = c.bad + 1; if c.bad >= 8 then c.on = false end end
+  c.push = true
+end
+S.controlOff = function()
+  if not (S.coop and valid(S.p1) and valid(S.buddy)) then return false end
+  -- стики: игрок 1 — его геймпад или клавиши WASD, игрок 2 — как читает мод
+  local p1x = analog(S.pc1, "Gamepad_LeftX"); local p1y = analog(S.pc1, "Gamepad_LeftY")
+  if math.abs(p1x) < 0.2 and math.abs(p1y) < 0.2 then
+    p1y = (isDown(S.pc1, "W") and 1 or 0) - (isDown(S.pc1, "S") and 1 or 0)
+    p1x = (isDown(S.pc1, "D") and 1 or 0) - (isDown(S.pc1, "A") and 1 or 0)
+  end
+  local f2, r2 = 0, 0
+  pcall(function() f2, r2 = readP2() end)
+  pcall(S.controlProbe, 1, S.p1, p1x, p1y)
+  pcall(S.controlProbe, 2, S.buddy, r2 or 0, f2 or 0)
+  local a, b = S.ctl[1], S.ctl[2]
+  -- «не слушается» держится, пока игрок снова не пойдёт: после заставки
+  -- первое же движение героя возвращает обычное разделение экрана
+  local key = tostring(a.on) .. "/" .. tostring(b.on)
+  if key ~= S.ctlKey then
+    S.ctlKey = key
+    local r1, r2s = "?", "?"
+    pcall(function() local r = S.p1.RawInput; r1 = string.format("%.2f,%.2f", r.X, r.Y) end)
+    pcall(function() local r = S.buddy.RawInput; r2s = string.format("%.2f,%.2f", r.X, r.Y) end)
+    trail(string.format("управление (Low/Alone): %s | ввод у героев Low (%s), Alone (%s)", key, r1, r2s))
+  end
+  local off1, off2 = a.on == false, b.on == false
+  return (off1 and off2) or (off1 and b.on == nil) or (off2 and a.on == nil)
+end
 local function insideBox(p, m) return p and p.inFront and p.x > m and p.x < 1 - m and p.y > m and p.y < 1 - m end
 
 -- Заставка (ролик на движке): героями управляет «секвенсор» игры — он
@@ -1076,9 +1122,15 @@ S.inCutscene = function()
         if ok and path and path:find("/Engine/Transient", 1, true) then now = true end
       end
     end
-    if now then
-      if not (S.cutsceneUntil and S.frames < S.cutsceneUntil) then trail("экран: идёт заставка — экран общий") end
-      S.cutsceneUntil = S.frames + 180
+    -- v9.15.10: ЗАСТАВКА БЕЗ РОЛИКА НА ДВИЖКЕ (сцена после титров: особая
+    -- камера, герои стоят). Флага «управление отключено» игра тут не ставит
+    -- (bIsPlayerInputEnabled остаётся true) — проверяем само управление:
+    -- игрок жмёт стик, а ввод до героя не доходит (RawInput пуст) и герой не
+    -- идёт. Так у обоих (или у одного, а другой стик не трогает) — заставка
+    local noInput = S.controlOff()
+    if now or noInput then
+      if not (S.cutsceneUntil and S.frames < S.cutsceneUntil) then trail(noInput and not now and "экран: управление у обоих отключено (заставка) — экран общий" or "экран: идёт заставка — экран общий") end
+      S.cutsceneUntil = S.frames + (now and 180 or 30)
     end
   end
   return S.cutsceneUntil ~= nil and S.frames < S.cutsceneUntil
@@ -1130,6 +1182,8 @@ S.copyTick = function()
   end)
   -- v9.15.7: кукла перешла к другому, экран разделён — первым ставим держащего
   if S.twoWorlds() and S.split and S.frames % 15 == 7 then
+    -- v9.15.10: в двух мирах половинами снова управляет метка ореола
+    if S.outMail.mode and S.outMail.mode ~= 0 then pcall(S.outMail.set, 0) end
     -- куклы ни у кого — порядок как обычно, по тому, где стоят герои
     local hh = S.lightOwner()
     local want
@@ -1308,6 +1362,27 @@ S.farRatio = function()
 end
 local function wantSplit()
   if S.inCutscene() then return false end
+  -- v9.15.10: у камеры игрока 1 идёт особый план игры, а герои рядом — план
+  -- для обоих: экран общий. Сцена после титров — не заставка: управление у
+  -- игроков есть (ввод доходит до героев), но камера плана стоит на месте и
+  -- за Low не едет — он у края или за кадром, и обычная проверка «виден ли
+  -- напарник» делила экран, хотя герои шли рядом
+  if S.cam1Ext and valid(S.cam1Ext.cam) and S.cam2External ~= S.cam1Ext.cam then
+    local together = false
+    pcall(function()
+      local a, b = S.p1:K2_GetActorLocation(), S.buddyLoc()
+      together = math.sqrt((a.X - b.X) ^ 2 + (a.Y - b.Y) ^ 2) < (CFG.merge_distance or 450) and math.abs(a.Z - b.Z) < 200
+    end)
+    if together then
+      if VIS.extShared ~= S.cam1Ext.cam then
+        VIS.extShared = S.cam1Ext.cam
+        local nm = "?"; pcall(function() nm = S.cam1Ext.cam:GetFName():ToString() end)
+        trail("экран: особый план " .. nm .. ", герои рядом — экран общий")
+      end
+      VIS.hiddenFor = 0
+      return false
+    end
+  end
   if CFG.layer_overlay ~= false then S.copyTick() end
   local mode = CFG.split
   if mode == "always" or S.splitAlways() then return true end
@@ -1360,7 +1435,10 @@ local function wantSplit()
       -- v9.15.3: только если герои стоят совсем рядом на одной высоте (ролики
       -- с движком и так ловит S.inCutscene); иначе «не видно обоих» бывает,
       -- когда второй лезет наверх, а камера игры тянется к нему
-      local cutscene = dh < 250 and dz < 60 and not (p and p.inFront) and not (raw1 and raw1.inFront)
+      -- v9.15.10: «нет в кадре» — вне рамки, а не только за спиной камеры:
+      -- в сцене после титров камера смотрела в сторону, оба героя были перед
+      -- ней, но далеко за краем, — и экран так и оставался разделённым
+      local cutscene = dh < 250 and dz < 60 and not insideBox(p, 0) and not insideBox(raw1, 0)
       if cutscene then
         if not VIS.cutLogged then VIS.cutLogged = true; trail("экран: в кадре нет ни одного героя, а они рядом (ролик) — объединяю") end
         VIS.shownFor = math.max(VIS.shownFor, 15)
@@ -1395,7 +1473,7 @@ local function wantSplit()
         local a, b = S.p1:K2_GetActorLocation(), S.buddyLoc()
         close = math.sqrt((a.X - b.X) ^ 2 + (a.Y - b.Y) ^ 2) < 250 and math.abs(a.Z - b.Z) < 60
       end)
-      if close and not (p and p.inFront) and not (p1 and p1.inFront) then
+      if close and not insideBox(p, 0) and not insideBox(p1, 0) then
         if not VIS.cutLogged then VIS.cutLogged = true; trail("экран: в кадре нет ни одного героя, а они рядом (ролик) — не делю") end
         VIS.hiddenFor = 0
         return false
@@ -1591,6 +1669,36 @@ pcall(function()
     if S.playersSwapped then pcall(S.setPlayerOrder, false) end
   end)
 end)
+-- v9.15.10: СТОРОНЫ ПОЛОВИН БЕЗ ПЕРЕСТАНОВКИ ИГРОКОВ. Раньше, чтобы игрок 2
+-- оказался слева/сверху, мод ставил его первым в списке локальных игроков.
+-- Но ролики игры (LevelSequence со сменой камер) отдают камеру первому
+-- локальному игроку: во дворе западного крыла ролик каждый кадр забирал вид
+-- игрока 2 на свою камеру, и обе половины показывали Low (проверено: 30 раз
+-- в секунду, без вызовов из скриптов — это сам движок). Теперь порядок
+-- игроков обычный, а места вывода готовых половин на экране меняет
+-- библиотека native/ln3couch_tw.dll (тот же способ, что для ореола куклы).
+-- Указание ей — файл native/split_out.txt: 0 — как нарисованы, 1 — поменять
+-- слева/справа, 2 — сверху/снизу. Библиотека создаёт split_out.ok, если
+-- умеет менять места вывода; нет её — порядок игроков меняется, как раньше.
+S.outMail = { mode = nil, ok = nil }
+S.outMail.ready = function()
+  if S.outMail.ok ~= nil then return S.outMail.ok end
+  if not (S.tw2 and S.tw2.native) then return false end
+  local f = io.open("ue4ss/Mods/LN3Couch/native/split_out.ok", "rb")
+  S.outMail.ok = f ~= nil
+  if f then f:close() end
+  trail(S.outMail.ok and "экран: стороны половин меняет библиотека (порядок игроков не трогаю)"
+    or "экран: библиотека не меняет места вывода — стороны половин через порядок игроков")
+  return S.outMail.ok
+end
+S.outMail.set = function(m)
+  if S.outMail.mode == m then return end
+  local f = io.open("ue4ss/Mods/LN3Couch/native/split_out.txt", "wb")
+  if not f then trail("экран: не записать указание библиотеке (split_out.txt)"); return end
+  f:write(tostring(m)); f:close()
+  S.outMail.mode = m
+  trail(string.format("экран: вывод половин — %s", m == 1 and "меняю слева/справа" or m == 2 and "меняю сверху/снизу" or "как нарисованы"))
+end
 S.setPlayerOrder = function(p2First)
   local arr = S.localPlayers()
   if not arr then return end
@@ -1629,6 +1737,7 @@ setSplitVisible = function(on)
   end)
   S.split = on
   if not on then
+    if S.outMail.mode and S.outMail.mode ~= 0 then pcall(S.outMail.set, 0) end
     pcall(S.applySplitAspect, false); S.splitLR, S.p2First = nil, false
     if S.playersSwapped then pcall(S.setPlayerOrder, false) end
   end
@@ -1692,7 +1801,19 @@ local function updateSplit()
         S.pruneLocalPlayers(S.pc2, "перед разделением экрана")
       end
     end)
-    pcall(S.decideSplitSides); if CFG.split_swap_sides ~= false then pcall(S.setPlayerOrder, S.p2First) end
+    pcall(S.decideSplitSides)
+    if CFG.split_swap_sides ~= false then
+      if not S.twoWorlds() and S.outMail.ready() then
+        -- v9.15.10: игроки по порядку как обычно, половины меняет библиотека
+        S.p2Geo = S.p2First
+        local m = S.p2First and (S.splitLR and 1 or 2) or 0
+        S.p2First = false
+        pcall(S.setPlayerOrder, false)
+        pcall(S.outMail.set, m)
+      else
+        pcall(S.setPlayerOrder, S.p2First)
+      end
+    end
   end
   setSplitVisible(want)
   pcall(S.applySplitAspect, want)
@@ -2490,8 +2611,18 @@ suspendCoop = function(reason)
   if not S.coop then return end
   log("кооператив приостановлен: %s", reason)
   S.real, S.boost = false, nil
-  resetBuddyInput()
-  removePC2()
+  local worldGone = reason == "смена уровня"
+  S.ctl = { [1] = { bad = 0 }, [2] = { bad = 0 } }; S.ctlKey = nil
+  if worldGone then
+    -- всё прошлого уровня — забываем, не вызывая (см. removePC2)
+    S.buddy, S.ai, S.poi, S.poiOwner, S.cam2, S.pc2 = nil, nil, nil, nil, nil, nil
+    S.prev = {}
+    if S.twc then S.twc.on = false; S.twc.cap = nil end
+    S.pc1 = findPC1()
+  else
+    resetBuddyInput()
+  end
+  removePC2(worldGone)
   -- второй «локальный игрок» переживает смену уровня — убираем всех, кроме первого
   local keep = findPC1()
   for _, pc in ipairs(FindAllOf("PlayerController") or {}) do
@@ -2506,7 +2637,7 @@ suspendCoop = function(reason)
       log("убран лишний игрок (контроллер %d)", id)
     end
   end
-  pcall(function() S.twcRelease() end)
+  if not worldGone then pcall(function() S.twcRelease() end) end
   S.coop, S.split, S.resumeCoop, S.cmd, S.throwCheck, S.detect, S.drag, S.cbox = false, false, true, nil, nil, nil, nil, nil
   -- камеры комнат прошлого уровня после загрузки «мёртвые» — забываем их
   RC.list, RC.listAt, RC.cur, RC.pickAt, RC.errLogged = {}, -100000, nil, 0, false
@@ -5347,6 +5478,17 @@ end
 S.extDecide = function(cm, cam, ease, run)
   local ok, alone, aL, aA = pcall(S.extSubject, cam)
   local nm = ""; pcall(function() nm = cam:GetFName():ToString() end)
+  -- v9.15.10: герои стоят рядом — план для обоих (сцена после титров:
+  -- CAM_PostCredits ушёл во вторую половину, у игрока 1 остался вид мимо героев)
+  local together = false
+  pcall(function()
+    local a, b = S.p1:K2_GetActorLocation(), S.buddyLoc()
+    together = math.sqrt((a.X - b.X) ^ 2 + (a.Y - b.Y) ^ 2) < (CFG.merge_distance or 450) and math.abs(a.Z - b.Z) < 200
+  end)
+  if ok and alone and together then
+    trail(string.format("камера 1: особый план %s — герои рядом, план для обоих (Low %.0f°, Alone %.0f°), оставил", nm, aL or -1, aA or -1))
+    return false
+  end
   if not (ok and alone) then
     trail(string.format("камера 1: особый план %s — для Low (Low %.0f°, Alone %.0f° от взгляда), оставил", nm, aL or -1, aA or -1))
     return false
@@ -7391,4 +7533,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.15.9 загружен. F9 — меню кооператива")
+log("v9.15.10 загружен. F9 — меню кооператива")
