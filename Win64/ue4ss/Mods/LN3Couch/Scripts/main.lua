@@ -1,4 +1,4 @@
--- LN3Couch v9.15.10 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.15.12 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -101,6 +101,17 @@ local S = {
   menuOpen = false, menu = nil, sel = 1, capture = nil, toast = nil, toastUntil = 0,
   drawSeen = false,
 }
+-- v9.15.12: сравнение объектов по адресу. «a == b» у объектов игры идёт через
+-- загрузчик модов и читает оба объекта; если один из них уже удалён (старый
+-- контроллер после смены уровня), игра падала с фатальной ошибкой
+S.sameObj = function(a, b)
+  local function addrOf(o)
+    if type(o) ~= "userdata" then return nil end
+    local ok, r = pcall(function() return o:GetAddress() end)
+    return ok and r or nil
+  end
+  local x = addrOf(a); return x ~= nil and x ~= 0 and x == addrOf(b)
+end
 local TICKS = 0
 -- v9.15.7: время в секундах — настоящее (по часам игры), а не «кадры / 60»:
 -- мод получает не 60 тактов в секунду, а сколько успевает игра (в тяжёлых
@@ -4738,6 +4749,21 @@ S.enemyInfo = function()
   end
   return #out > 0 and table.concat(out, "; ") or "рядом никого"
 end
+-- v9.15.12: состояние места подсадки (почему герой не встаёт в позу)
+S.spotState = function(spot, hero)
+  local parts = {}
+  local function add(k, f) local ok, v = pcall(f); parts[#parts + 1] = k .. "=" .. (ok and tostring(v) or "?") end
+  add("включено", function() return spot.bIsEnabled end)
+  add("занято", function() return spot:IsCurrentlyControlled() end)
+  add("кем", function() local c = spot.CurrentControllingActor; return valid(c) and heroName(c) or "никем" end)
+  add("точно", function() return spot.bUseExactLocation end)
+  add("допуск", function() return string.format("%.0f", spot.ValidPositionDistance) end)
+  add("угол", function() return string.format("%.0f", spot.MaxFacingAngle) end)
+  add("до места стояния", function() return string.format("%.0f", dist(spot:GetPlayPalStandPosition(hero), hero:K2_GetActorLocation())) end)
+  add("стоит верно", function() return spot:IsCharacterValidStandPosition(hero, hero:K2_GetActorLocation()) end)
+  add("смотрит верно", function() return spot:IsCharacterValidStandDirection(hero) end)
+  return table.concat(parts, ", ")
+end
 S.boostStart = function(hero, owner, spot)
   pcall(function() S.animPre = { [1] = S.animSnapOf(S.p1), [2] = S.animSnapOf(S.buddy) } end)
   if not S.animBase then S.animBase = S.animPre end
@@ -4779,6 +4805,7 @@ S.boostStart = function(hero, owner, spot)
     end
     try("PlaypalBoost Activate", function() action:Activate() end)
     log("подсадка: %s подсаживает (%s)", heroName(hero), spot:GetFName():ToString())
+    pcall(function() trail("подсадка: место — " .. S.spotState(spot, hero)) end)
     return true
   end
   S.boostEnd("команда не создалась")
@@ -4859,6 +4886,7 @@ S.boostTick = function(e1, e2)
         local hl, sl = b.hero:K2_GetActorLocation(), b.spot:K2_GetActorLocation()
         local v = b.hero:GetVelocity()
         trail(string.format("подсадка: %s ещё идёт к месту — %.0f см, скорость %.0f, ИИ занят=%s", heroName(b.hero), dist(hl, sl), math.sqrt(v.X * v.X + v.Y * v.Y), tostring(S.ai:IsAiCommand())))
+        if (S.frames - b.startFrame) < 130 then pcall(function() trail("подсадка: место — " .. S.spotState(b.spot, b.hero)) end) end
       end)
     end
   end
@@ -5426,9 +5454,13 @@ end
 -- Отмечаем приближения камеры игрока 1, которые никто не снял; после
 -- возрождения мод снимает их сам (S.afterRespawnCam).
 S.zoomTrack = function(name, ctx, args)
-  if S.zoomSelf then return end
+  -- v9.15.12: нужно только в кооперативе (снятие приближений после смерти).
+  -- Без кооператива S.pc1 мог остаться от главного меню (удалён) — сравнение
+  -- с ним роняло игру в финале с Мамой
+  if S.zoomSelf or not S.coop or not valid(S.pc1) then return end
   local cm = nil; pcall(function() cm = ctx:get() end)
-  if cm ~= S.pc1.PlayerCameraManager then return end
+  local pcm = nil; pcall(function() pcm = S.pc1.PlayerCameraManager end)
+  if not S.sameObj(cm, pcm) then return end
   S.zoomOpen = S.zoomOpen or {}
   if name == "AddCameraZoom" or name == "AddCameraZoomAfterDelay" then
     local ch = 1; pcall(function() ch = args[4]:get() end)
@@ -5696,7 +5728,7 @@ pcall(function()
       local d = dist(en:K2_GetActorLocation(), pl:K2_GetActorLocation())
       trail(string.format("враги: %s поймал %s на расстоянии %.0f см", cname(en), heroName(pl), d))
       -- запоминаем, с какого расстояния игра сама ловит игрока 1
-      if pl == S.p1 and d > 20 and d < 400 then S.enemy.catchDist = math.max(S.enemy.catchDist or 0, d) end
+      if S.coop and S.sameObj(pl, S.p1) and d > 20 and d < 400 then S.enemy.catchDist = math.max(S.enemy.catchDist or 0, d) end
     end)
   end)
 end)
@@ -6077,6 +6109,20 @@ S.chaseTick = function(en, key, cn, dA, zA, dL, zL)
   if not S.turnHooked then pcall(function() local rc = en.BPC_RotateToTargetPlayer; if valid(rc) then S.watchTurnNode(rc) end end) end
   local who = function(o) return (o == S.p1 and "Low") or (o == S.buddy and "Alone") or (valid(o) and cname(o)) or "пусто" end
   local tgt = nil; pcall(function() tgt = bb:GetValueAsObject(FName("CharacterPercieved")) end)
+  -- v9.15.11: С КАКОГО РАССТОЯНИЯ ВРАГ ЗАМЕЧАЕТ ГЕРОЯ ИГРОКА 1. Игра сама
+  -- проверяет только его, а мод за второго — в пределах 3,5 м (мини-кины). Но
+  -- надсмотрщик за стойкой замечает игрока издалека: второго он не видел,
+  -- пока тот не подошёл вплотную. Запоминаем (для каждого вида врага), с
+  -- какого расстояния игра заметила героя игрока 1, — с того же замечаем и
+  -- второго (если он у врага перед глазами и стена не мешает)
+  if tgt == S.p1 and st.prevTgt ~= S.p1 and dL and dL > 0 then
+    E.seeRange = E.seeRange or {}
+    if dL > (E.seeRange[cn] or 0) and dL < 3000 then
+      E.seeRange[cn] = dL
+      trail(string.format("погоня: %s заметил героя игрока 1 с %.0f см — второго теперь замечает с того же расстояния", cn, dL))
+    end
+  end
+  st.prevTgt = tgt
   if tgt == S.buddy and S.real and CFG.enemy_p0_swap ~= false then
     S.installP0Hook()
     S.p0For[en:GetAddress()] = S.frames
@@ -6230,20 +6276,37 @@ S.chaseTick = function(en, key, cn, dA, zA, dL, zL)
   end
   local seeR = CFG.enemy_see_p2 or 350
   local why = nil
-  if tgt ~= S.buddy and dA < seeR and dA < dL then why = "заметил Alone"
-  elseif tgt == S.p1 and dA < 1200 and dA + 150 < dL then why = "Alone ближе" end
-  if not why then return end
+  local learned = E.seeRange and E.seeRange[cn]
+  local function inFront(deg)
+    local ok, r = pcall(function()
+      local el, bl, fw = en:K2_GetActorLocation(), S.buddy:K2_GetActorLocation(), en:GetActorForwardVector()
+      local dx, dy = bl.X - el.X, bl.Y - el.Y
+      local d = math.max(math.sqrt(dx * dx + dy * dy), 1)
+      local fl = math.max(math.sqrt(fw.X * fw.X + fw.Y * fw.Y), 0.001)
+      return (fw.X * dx + fw.Y * dy) / (d * fl) > math.cos(math.rad(deg))
+    end)
+    return ok and r
+  end
+  -- v9.15.12: цель выбирается по тому, кто ближе. Раньше, если враг уже гнался
+  -- за Alone, а Low оказался ближе, никто не переключал цель — враг пробегал мимо Low
+  local newT, what = nil, nil
+  if tgt ~= S.buddy and dA < seeR and dA < dL then why = "заметил Alone"; newT = S.buddy
+  elseif tgt ~= S.buddy and tgt ~= S.p1 and learned and learned > seeR and dA < learned and inFront(70) then why = string.format("заметил Alone (как игрока 1, с %.0f см)", learned); newT = S.buddy
+  elseif tgt == S.p1 and dA < 1200 and dA + 150 < dL then why = "Alone ближе"; newT = S.buddy
+  elseif tgt == S.buddy and dL < 1200 and dL + 150 < dA then why = "Low ближе"; newT = S.p1 end
+  if not newT then return end
+  what = (newT == S.p1) and "Low" or "Alone"
   local los = true
-  pcall(function() local r = en.Controller:LineOfSightTo(S.buddy, { X = 0, Y = 0, Z = 0 }, false); if r == false then los = false end end)
+  pcall(function() local r = en.Controller:LineOfSightTo(newT, { X = 0, Y = 0, Z = 0 }, false); if r == false then los = false end end)
   if not los then return end
   local ok = pcall(function()
-    bb:SetValueAsObject(FName("CharacterPercieved"), S.buddy)
+    bb:SetValueAsObject(FName("CharacterPercieved"), newT)
     bb:SetValueAsBool(FName("IsCharacterPercieved"), true)
     bb:SetValueAsBool(FName("IsAlerted"), true)
   end)
   local now = nil; pcall(function() now = bb:GetValueAsObject(FName("CharacterPercieved")) end)
   if not st.rtAt or S.frames - st.rtAt > 300 then
-    trail(string.format("погоня: %s — %s (до Alone %.0f, до Low %.0f, цель была %s) — гонится за Alone (%s)", cn, why, dA, dL, who(tgt), (ok and now == S.buddy) and "ок" or "не вышло"))
+    trail(string.format("погоня: %s — %s (до Alone %.0f, до Low %.0f, цель была %s) — гонится за %s (%s)", cn, why, dA, dL, who(tgt), what, (ok and now == newT) and "ок" or "не вышло"))
   end
   st.rtAt = S.frames
 end
@@ -7366,13 +7429,48 @@ local function Tick()
     local okw, wn = pcall(function() return UEHelpers.GetWorld():GetFullName() end)
     if okw then
       if S.worldName and wn ~= S.worldName and S.coop then try("suspendCoop", suspendCoop, "смена уровня") end
-      if wn ~= S.worldName then S.crumbUntil = S.frames + 600 end
+      if wn ~= S.worldName then
+        S.crumbUntil = S.frames + 600
+        -- v9.15.12: контроллер игрока 1 из прошлого мира удалён — берём новый
+        if not S.coop then S.pc1 = findPC1() end
+      end
       S.worldName = wn
     end
   end
   -- запись анимаций героев (для разбора совместных действий) — только в
   -- кооперативе: на заставках некоторых глав игра даёт «анимацию», обращение
   -- к которой роняет загрузчик модов
+  -- v9.15.11 (разбор): герой игрока 1 «завис в воздухе» вместо удара ключом
+  -- по цепи. Пишем, когда меняется его состояние: режим движения, монтаж,
+  -- активные способности (GA_*), что у него в руках
+  if S.coop and S.frames % 10 == 3 then pcall(function()
+    local h = S.p1
+    if not valid(h) then return end
+    local mm, cm = -1, -1
+    pcall(function() mm = h.CharacterMovement.MovementMode; cm = h.CharacterMovement.CustomMovementMode end)
+    local mon = "-"; pcall(function() local m = h:GetCurrentMontage(); if valid(m) then mon = m:GetFName():ToString() end end)
+    local gas = {}
+    pcall(function()
+      local me = h:GetAddress()
+      if not S.gaList or S.frames - (S.gaListAt or -999) > 120 then S.gaList = FindAllOf("GameplayAbility") or {}; S.gaListAt = S.frames end
+      for _, ga in ipairs(S.gaList) do
+        pcall(function()
+          if valid(ga) and ga.bIsActive == true then
+            local cp = nil; pcall(function() cp = ga.CurrentPlayer end)
+            local own = nil; pcall(function() own = ga:GetOwningActorFromActorInfo() end)
+            if (valid(cp) and cp:GetAddress() == me) or (valid(own) and own:GetAddress() == me) then gas[#gas + 1] = cname(ga) end
+          end
+        end)
+      end
+    end)
+    table.sort(gas)
+    local key = string.format("режим %s/%s, монтаж %s, способности [%s]", tostring(mm), tostring(cm), mon, table.concat(gas, ", "))
+    if key ~= S.p1StateKey then
+      S.p1StateKey = key
+      local v = 0; pcall(function() local x = h:GetVelocity(); v = math.sqrt(x.X * x.X + x.Y * x.Y + x.Z * x.Z) end)
+      trail(string.format("герой игрока 1 (%s): %s, скорость %.0f", heroName(h), key, v))
+    end
+  end) end
   if S.coop and S.frames % 5 == 0 then
     pcall(function()
       S.animSeen = S.animSeen or {}
@@ -7533,4 +7631,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.15.10 загружен. F9 — меню кооператива")
+log("v9.15.12 загружен. F9 — меню кооператива")
