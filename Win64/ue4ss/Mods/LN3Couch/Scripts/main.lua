@@ -2161,7 +2161,7 @@ S.listenerHookOk = pcall(function()
   RegisterHook("/Script/Kosmos.KosmosAudioBlueprintLibrary:RegisterDefaultListener", function(ctx, worldCtx, attachment)
     if not S.coop or not valid(AUDIO.owner) then return end
     local okg, a = pcall(function() return attachment:get() end)
-    if okg and a ~= AUDIO.owner then
+    if okg and not S.sameObj(a, AUDIO.owner) then
       local isP2 = false
       pcall(function() isP2 = (a == S.pc2) or (a == S.pc2.PlayerCameraManager) or (a == S.cam2) end)
       if isP2 or not valid(a) then
@@ -5578,6 +5578,12 @@ S.extOnSplit = function(on)
     trail("камера 1: экран общий — особый план, отданный второй половине, снова у обоих")
   end
 end
+-- камера игрока 1? Сравниваем по адресу и под pcall: `==` у объектов игры
+-- в хуке падает, если контроллер устарел (смена уровня, меню)
+S.isCam1 = function(cm)
+  local ok, r = pcall(function() return valid(S.pc1) and S.sameObj(cm, S.pc1.PlayerCameraManager) end)
+  return ok and r == true
+end
 S.hookExternalCam = function()
   if S.extHookOk then return end
   local base = "/Script/CameraSystemRuntime.CameraManager:"
@@ -5588,7 +5594,7 @@ S.hookExternalCam = function()
       pcall(function() cm = ctx:get() end)
       pcall(function() cam = camP:get() end)
       pcall(function() ease = easeP:get() end)
-      if not (S.coop and valid(cm) and valid(S.pc1) and cm == S.pc1.PlayerCameraManager and valid(cam)) then return end
+      if not (S.coop and valid(cm) and S.isCam1(cm) and valid(cam)) then return end
       -- v9.15.9: план, начатый на общем экране, помним — если потом экран
       -- разделится, решаем, чей он (S.extOnSplit)
       S.cam1Ext = { cam = cam, ease = ease }
@@ -5601,8 +5607,9 @@ S.hookExternalCam = function()
     RegisterHook(base .. "StopExternalOverTime", function(ctx)
       if S.camSelf then return end
       local cm = nil; pcall(function() cm = ctx:get() end)
-      if valid(S.pc1) and cm == S.pc1.PlayerCameraManager then S.cam1Ext = nil end
-      if valid(S.pc1) and cm == S.pc1.PlayerCameraManager and S.cam2External then
+      local mine = S.isCam1(cm)
+      if mine then S.cam1Ext = nil end
+      if mine and S.cam2External then
         -- игра сама закончила план — второй возвращается к своей комнате
         S.cam2External = nil; RC.pickAt = 0; S.camSnap = true
         trail("камера 2: особый план закончился — снова своя комната")
