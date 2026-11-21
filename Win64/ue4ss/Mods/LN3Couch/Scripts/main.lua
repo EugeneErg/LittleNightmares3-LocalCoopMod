@@ -4377,12 +4377,15 @@ S.boostEnd = function(reason)
   -- после подсадки то же место не запускаем снова, пока подсаживавший не
   -- отпустит «схватить» и не пройдёт 4 с: иначе ещё зажатый курок через ~1 с
   -- снова отдаёт героя ИИ, и тот стоит в позе подсадки без управления.
-  -- После сорвавшейся (короткой) подсадки место не блокируем — игрок сразу
-  -- пробует ещё раз; повтор от зажатого курка не даст rbFired: курок надо
-  -- отпустить
+  -- Сорвавшуюся подсадку узнаём по причине, а не по длительности: удачная
+  -- («готово») тоже бывает короче 90 тактов. После сорвавшейся место не
+  -- блокируем — игрок сразу пробует ещё раз; повтор от зажатого курка не даст
+  -- rbFired: курок надо отпустить
+  local failed = reason == "отпустил кнопку" or reason == "никто не запрыгнул"
+    or reason == "не встал в позу" or reason == "команда не создалась"
   local isP1 = S.sameObj(b.owner, S.pc1)
   if isP1 then S.rbFired1 = true else S.rbFired2 = true end
-  if valid(b.spot) and not short then
+  if valid(b.spot) and not failed then
     S.boostSpotBlock = { spot = b.spot, untilT = now() + (CFG.boost_reuse_seconds or 4), isP1 = isP1, released = false }
   end
   pcall(S.boostPassThrough, false)
