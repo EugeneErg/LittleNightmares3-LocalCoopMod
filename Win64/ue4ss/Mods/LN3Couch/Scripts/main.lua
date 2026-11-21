@@ -2163,7 +2163,12 @@ S.listenerHookOk = pcall(function()
     local okg, a = pcall(function() return attachment:get() end)
     if okg and not S.sameObj(a, AUDIO.owner) then
       local isP2 = false
-      pcall(function() isP2 = (a == S.pc2) or (a == S.pc2.PlayerCameraManager) or (a == S.cam2) end)
+      -- по адресу, как и выше: «==» с уже удалённым контроллером второго
+      -- игрока роняет игру, и pcall от этого не спасает
+      pcall(function()
+        isP2 = S.sameObj(a, S.pc2) or S.sameObj(a, S.cam2)
+          or (valid(S.pc2) and S.sameObj(a, S.pc2.PlayerCameraManager))
+      end)
       if isP2 or not valid(a) then
         pcall(function() attachment:set(AUDIO.owner) end)
         if not S.listenerHookLogged then S.listenerHookLogged = true; log("звук: игра хотела сделать «ушами» второй вид — оставил у игрока 1") end
@@ -4367,13 +4372,18 @@ S.boostEnd = function(reason)
   S.boost = nil
   -- не переключать героя туда-обратно слишком часто; после совсем короткой
   -- (сорвавшейся) подсадки ждём дольше
-  S.boostCooldown = S.frames + ((b.startFrame and S.frames - b.startFrame < 90) and 180 or 45)
+  local short = b.startFrame and S.frames - b.startFrame < 90
+  S.boostCooldown = S.frames + (short and 180 or 45)
   -- после подсадки то же место не запускаем снова, пока подсаживавший не
   -- отпустит «схватить» и не пройдёт 4 с: иначе ещё зажатый курок через ~1 с
-  -- снова отдаёт героя ИИ, и тот стоит в позе подсадки без управления
-  if valid(b.spot) then
-    S.boostSpotBlock = { spot = b.spot, untilT = now() + (CFG.boost_reuse_seconds or 4), isP1 = S.sameObj(b.owner, S.pc1), released = false }
-    if S.boostSpotBlock.isP1 then S.rbFired1 = true else S.rbFired2 = true end
+  -- снова отдаёт героя ИИ, и тот стоит в позе подсадки без управления.
+  -- После сорвавшейся (короткой) подсадки место не блокируем — игрок сразу
+  -- пробует ещё раз; повтор от зажатого курка не даст rbFired: курок надо
+  -- отпустить
+  local isP1 = S.sameObj(b.owner, S.pc1)
+  if isP1 then S.rbFired1 = true else S.rbFired2 = true end
+  if valid(b.spot) and not short then
+    S.boostSpotBlock = { spot = b.spot, untilT = now() + (CFG.boost_reuse_seconds or 4), isP1 = isP1, released = false }
   end
   pcall(S.boostPassThrough, false)
   try("boost stop", function() S.ai:StopAllAICommands() end)
