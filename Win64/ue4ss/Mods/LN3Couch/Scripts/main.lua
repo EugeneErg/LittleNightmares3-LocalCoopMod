@@ -2161,7 +2161,7 @@ S.listenerHookOk = pcall(function()
   RegisterHook("/Script/Kosmos.KosmosAudioBlueprintLibrary:RegisterDefaultListener", function(ctx, worldCtx, attachment)
     if not S.coop or not valid(AUDIO.owner) then return end
     local okg, a = pcall(function() return attachment:get() end)
-    if okg and a ~= AUDIO.owner then
+    if okg and not S.sameObj(a, AUDIO.owner) then
       local isP2 = false
       pcall(function() isP2 = (a == S.pc2) or (a == S.pc2.PlayerCameraManager) or (a == S.cam2) end)
       if isP2 or not valid(a) then
@@ -2546,7 +2546,7 @@ local function setCoop(on)
     if S.crumbUntil then S.crumbUntil = S.frames + 300 end
     -- всё, что отсчитывается в кадрах, начинаем заново (иначе после
     -- возобновления подсадка «ждёт» паузу, оставшуюся с прошлого раза)
-    S.boost, S.boostCooldown, S.pendingKill, S.localSwap = nil, nil, nil, nil
+    S.boost, S.boostCooldown, S.pendingKill, S.localSwap, S.boostSpotBlock = nil, nil, nil, nil, nil
     S.enemy.listAt, S.enemy.killAt, S.enemy.bbAt, S.enemy.st, S.enemy.pos = -10000, -10000, {}, {}, {}
     -- объекты прошлого уровня (кукла, съёмки второго мира) — искать заново
     S.twAt, S.ownAt = nil, nil
@@ -4368,6 +4368,13 @@ S.boostEnd = function(reason)
   -- не переключать героя туда-обратно слишком часто; после совсем короткой
   -- (сорвавшейся) подсадки ждём дольше
   S.boostCooldown = S.frames + ((b.startFrame and S.frames - b.startFrame < 90) and 180 or 45)
+  -- после подсадки то же место не запускаем снова, пока подсаживавший не
+  -- отпустит «схватить» и не пройдёт 4 с: иначе ещё зажатый курок через ~1 с
+  -- снова отдаёт героя ИИ, и тот стоит в позе подсадки без управления
+  if valid(b.spot) then
+    S.boostSpotBlock = { spot = b.spot, untilT = now() + (CFG.boost_reuse_seconds or 4), isP1 = S.sameObj(b.owner, S.pc1), released = false }
+    if S.boostSpotBlock.isP1 then S.rbFired1 = true else S.rbFired2 = true end
+  end
   pcall(S.boostPassThrough, false)
   try("boost stop", function() S.ai:StopAllAICommands() end)
   try("ai tick off", function() S.ai:SetActorTickEnabled(false) end)
@@ -4865,8 +4872,17 @@ S.rbEdges = function()
   local e1, e2 = r1 and not S.prevRB1, r2 and not S.prevRB2
   S.prevRB1, S.prevRB2 = r1, r2
   -- с какого момента курок держат (для начала подсадки) — в секундах
-  if r1 then S.rbAt1 = S.rbAt1 or now() else S.rbAt1, S.rbFired1 = nil, nil end
-  if r2 then S.rbAt2 = S.rbAt2 or now() else S.rbAt2, S.rbFired2 = nil, nil end
+  -- отпусканием считаем только 0,25 с без курка: при смене контроллера игра
+  -- на кадр «забывает» зажатый курок — это не новое нажатие
+  local t = now()
+  if r1 then S.rbOff1 = nil; S.rbAt1 = S.rbAt1 or t
+  else S.rbOff1 = S.rbOff1 or t; if t - S.rbOff1 >= 0.25 then S.rbAt1, S.rbFired1 = nil, nil end end
+  if r2 then S.rbOff2 = nil; S.rbAt2 = S.rbAt2 or t
+  else S.rbOff2 = S.rbOff2 or t; if t - S.rbOff2 >= 0.25 then S.rbAt2, S.rbFired2 = nil, nil end end
+  local blk = S.boostSpotBlock
+  if blk and not blk.released then
+    if (blk.isP1 and not S.rbAt1) or (not blk.isP1 and not S.rbAt2) then blk.released = true end
+  end
   return e1, e2
 end
 S.boostTick = function(e1, e2)
@@ -4990,6 +5006,14 @@ end
 S.tryBoost = function(hero, owner, who)
   local spot = S.nearestBoostTo(hero)
   if not spot then return end
+  local blk = S.boostSpotBlock
+  if blk then
+    if not valid(blk.spot) or (blk.released and now() >= blk.untilT) then S.boostSpotBlock = nil
+    elseif S.sameObj(blk.spot, spot) then
+      trail(string.format("подсадка: %s у того же места сразу после подсадки — не начинаю (отпущен=%s, ещё %.1f с)", who, tostring(blk.released), math.max(0, blk.untilT - now())))
+      return
+    end
+  end
   -- v9.15.8: в новой версии игры подсаживает только «напарник-бот». Если
   -- герою игрока 1 эту роль на время дать нельзя — подсаживает герой
   -- игрока 2, а Low запрыгивает (подсадка работает, просто даёт её Alone).
@@ -5554,6 +5578,12 @@ S.extOnSplit = function(on)
     trail("камера 1: экран общий — особый план, отданный второй половине, снова у обоих")
   end
 end
+-- камера игрока 1? Сравниваем по адресу и под pcall: `==` у объектов игры
+-- в хуке падает, если контроллер устарел (смена уровня, меню)
+S.isCam1 = function(cm)
+  local ok, r = pcall(function() return valid(S.pc1) and S.sameObj(cm, S.pc1.PlayerCameraManager) end)
+  return ok and r == true
+end
 S.hookExternalCam = function()
   if S.extHookOk then return end
   local base = "/Script/CameraSystemRuntime.CameraManager:"
@@ -5564,7 +5594,7 @@ S.hookExternalCam = function()
       pcall(function() cm = ctx:get() end)
       pcall(function() cam = camP:get() end)
       pcall(function() ease = easeP:get() end)
-      if not (S.coop and valid(cm) and valid(S.pc1) and cm == S.pc1.PlayerCameraManager and valid(cam)) then return end
+      if not (S.coop and valid(cm) and S.isCam1(cm) and valid(cam)) then return end
       -- v9.15.9: план, начатый на общем экране, помним — если потом экран
       -- разделится, решаем, чей он (S.extOnSplit)
       S.cam1Ext = { cam = cam, ease = ease }
@@ -5577,8 +5607,9 @@ S.hookExternalCam = function()
     RegisterHook(base .. "StopExternalOverTime", function(ctx)
       if S.camSelf then return end
       local cm = nil; pcall(function() cm = ctx:get() end)
-      if valid(S.pc1) and cm == S.pc1.PlayerCameraManager then S.cam1Ext = nil end
-      if valid(S.pc1) and cm == S.pc1.PlayerCameraManager and S.cam2External then
+      local mine = S.isCam1(cm)
+      if mine then S.cam1Ext = nil end
+      if mine and S.cam2External then
         -- игра сама закончила план — второй возвращается к своей комнате
         S.cam2External = nil; RC.pickAt = 0; S.camSnap = true
         trail("камера 2: особый план закончился — снова своя комната")
