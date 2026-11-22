@@ -1,4 +1,4 @@
--- LN3Couch v9.15.12 — игра вдвоём на одном ПК для Little Nightmares III
+-- LN3Couch v9.15.13 — игра вдвоём на одном ПК для Little Nightmares III
 -- F9 — меню кооператива (всё включается и настраивается там)
 local UEHelpers = require("UEHelpers")
 
@@ -1821,8 +1821,16 @@ local function updateSplit()
         S.p2First = false
         pcall(S.setPlayerOrder, false)
         pcall(S.outMail.set, m)
-      else
+      elseif S.twoWorlds() then
         pcall(S.setPlayerOrder, S.p2First)
+      else
+        -- v9.15.13: библиотека не умеет менять места вывода — половины остаются как
+        -- нарисованы (игрок 1 слева/сверху). Порядок игроков на ходу больше не
+        -- меняем: после такой перестановки игра падала в потоке отрисовки (#37)
+        if S.p2First and not S.noSwapLogged then S.noSwapLogged = true; trail("экран: стороны половин поменять нечем — оставляю как нарисованы (порядок игроков не трогаю)") end
+        S.p2Geo = S.p2First
+        S.p2First = false
+        pcall(S.setPlayerOrder, false)
       end
     end
   end
@@ -7675,4 +7683,4 @@ local function dumpTree(w, depth, out)
     if okr and valid(root) then dumpTree(root, depth + 1, out) end
   end
 end
-log("v9.15.12 загружен. F9 — меню кооператива")
+log("v9.15.13 загружен. F9 — меню кооператива")
